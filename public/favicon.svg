@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <defs>
+    <linearGradient id="meadowGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#b2df8a" />
+      <stop offset="100%" stop-color="#84bd5c" />
+    </linearGradient>
+    <linearGradient id="flowerGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffb8c6" />
+      <stop offset="100%" stop-color="#f88ca4" />
+    </linearGradient>
+  </defs>
+
+  <!-- Cute Leaf / Meadow Body -->
+  <path
+    d="M16 3.5 C19.5 4 27.5 11 27.5 19.5 C27.5 25.5 22.5 28.5 16 28.5 C9.5 28.5 4.5 25.5 4.5 19.5 C4.5 11 12.5 4 16 3.5 Z"
+    fill="url(#meadowGrad)"
+    stroke="#527d37"
+    stroke-width="1.3"
+    stroke-linejoin="round"
+  />
+
+  <!-- Subtle Top Leaf Vein Accent -->
+  <path
+    d="M16 5.5 C16 8.5 16 11 16 12.5"
+    fill="none"
+    stroke="#679749"
+    stroke-width="1"
+    stroke-linecap="round"
+    opacity="0.5"
+  />
+
+  <!-- Cheerful Eyes -->
+  <ellipse cx="11.5" cy="16.5" rx="1.6" ry="2.2" fill="#2d3827" />
+  <ellipse cx="20.5" cy="16.5" rx="1.6" ry="2.2" fill="#2d3827" />
+  <!-- Eye highlights -->
+  <circle cx="12.1" cy="15.8" r="0.65" fill="#ffffff" />
+  <circle cx="21.1" cy="15.8" r="0.65" fill="#ffffff" />
+
+  <!-- Rosy Blush Cheeks -->
+  <ellipse cx="8.8" cy="19.2" rx="2.3" ry="1.4" fill="#fca5a5" opacity="0.85" />
+  <ellipse cx="23.2" cy="19.2" rx="2.3" ry="1.4" fill="#fca5a5" opacity="0.85" />
+
+  <!-- Cheerful Meadow Smile -->
+  <path
+    d="M13.6 19.8 Q16 23.6 18.4 19.8 Z"
+    fill="#70443c"
+    stroke="#2d3827"
+    stroke-width="1"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M14.3 21.2 Q16 20.2 17.7 21.2 Q16 23.3 14.3 21.2 Z"
+    fill="#f472b6"
+  />
+
+  <!-- Tiny Meadow Flower on Head -->
+  <g transform="translate(22.5, 7.5)">
+    <!-- 5 Petals -->
+    <circle cx="0" cy="-1.8" r="1.4" fill="url(#flowerGrad)" />
+    <circle cx="1.7" cy="-0.6" r="1.4" fill="url(#flowerGrad)" />
+    <circle cx="1.1" cy="1.5" r="1.4" fill="url(#flowerGrad)" />
+    <circle cx="-1.1" cy="1.5" r="1.4" fill="url(#flowerGrad)" />
+    <circle cx="-1.7" cy="-0.6" r="1.4" fill="url(#flowerGrad)" />
+    <!-- Flower Center -->
+    <circle cx="0" cy="0" r="1.2" fill="#fde047" stroke="#d97706" stroke-width="0.4" />
+  </g>
+</svg>

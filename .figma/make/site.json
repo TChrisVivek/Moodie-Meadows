@@ -1,0 +1,14 @@
+{
+  "title": "Moodie Meadows",
+  "description": "Engage children aged 6-10 in a vibrant meadow adventure to learn about emotions, practice emotional regulation, and earn rewards through interactive gameplay.",
+  "icons": {
+    "icon": "/favicon.svg"
+  },
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
