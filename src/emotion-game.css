@@ -29,3 +29,165 @@
 @media(max-width:760px){.topbar .brand{font-size:20px}.topbar nav{gap:8px;padding:0 8px}.topbar nav .nav-button{font-size:10px;padding:12px 9px;min-height:48px;gap:6px}.meadow-token-balance{font-size:17px}.meadow-token-balance>span:last-child{font-size:8px}.token-coin{width:27px;height:27px}.topbar .brand small{font-size:6px;letter-spacing:1.2px}.topbar .brand{gap:7px}.header-right{gap:8px}.emotion-locations{grid-template-columns:1fr 1fr;gap:13px}.location-picture{height:125px}.location-info h3{font-size:21px;min-height:46px}.location-info .card-tag{font-size:7px;letter-spacing:.5px}.location-mascot{width:90px;height:90px}.emotion-locations>.location-card:last-child{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr}.emotion-locations>.location-card:last-child .location-picture{height:100%;min-height:160px}.emotion-locations>.location-card:last-child .location-info h3{min-height:0}.map-count{font-size:10px;padding:9px 10px}.emotion-map .section-heading{gap:10px;align-items:center}.emotion-map .section-heading h2{font-size:25px}.emotion-map .section-heading p{font-size:10px}.emotion-map .eyebrow{font-size:7px;letter-spacing:1px}.meadow-shortcuts{grid-template-columns:1fr;gap:12px}.meadow-shortcuts strong{font-size:18px}.check-in{padding:18px;gap:12px}.check-in h2{font-size:23px}.check-in-options{gap:6px;justify-content:space-between}.check-in-options button{width:58px;min-width:0}.check-in-options .buddy{width:46px;height:48px}.check-in-options span{font-size:9px}.check-in .eyebrow{font-size:7px}.check-in .check-in-message{font-size:11px}.emotion-game-inner{padding:23px 16px 30px}.emotion-game-inner h1{font-size:30px;margin:24px 0}.emotion-game-inner h2{font-size:25px}.adventure-steps{gap:4px;padding:0}.adventure-steps>span{flex-direction:column;gap:5px}.adventure-steps small{font-size:8px}.story-landscape{height:190px}.story-mascot{width:125px;height:125px;left:5%}.story-name{font-size:14px;right:13px;top:17px;padding:10px 13px}.story-text{font-size:13px}.emotion-answer-grid{grid-template-columns:1fr 1fr;gap:12px}.emotion-answer-grid .answer-card{min-height:165px}.emotion-answer-grid .buddy{width:110px;height:110px}.emotion-answer-grid .answer-card>span{font-size:19px}.validation-card{padding:18px}.validation-card p{font-size:12px}.skill-choice{padding:16px 13px;gap:10px;font-size:13px}.skill-choice svg{width:20px}.grounding-board{gap:10px}.grounding-board button{width:92px;min-height:115px}.recap-grid{grid-template-columns:1fr;gap:12px}.recap-grid>div{padding:20px}.token-breakdown{padding:17px 12px;gap:8px}.token-breakdown>span{font-size:9px;padding:10px}.token-breakdown strong{font-size:14px}.kindness-bonus{padding:20px 13px}.kindness-bonus h3{font-size:22px}.kindness-bonus p{font-size:12px;margin:12px 0}.kindness-bonus button{font-size:11px}.shop-balance{gap:8px;padding:15px;font-size:12px}.shop-balance>span{font-size:9px}.shop-grid{gap:13px}.shop-art{height:130px}.shop-item{padding:13px 10px}.shop-item h2{font-size:20px;min-height:45px}.shop-item .primary,.shop-item .secondary{font-size:10px;padding:10px 6px;line-height:1.5}.shop-item .card-tag{font-size:7px;letter-spacing:.6px}.shop-item p{font-size:11px}.collection-friends{grid-template-columns:1fr 1fr;gap:12px}.collection-friend h3{font-size:18px}.collection-friend>div{height:115px}.collection-friend .buddy{height:110px;width:110px}.collection-friend p{font-size:10px}.collection-friends>article:last-child{grid-column:1/-1;max-width:220px;justify-self:center}.treasure-shelf article{width:155px;padding:15px 10px}.treasure-shelf h3{font-size:19px}.treasure-shelf .reward-art{height:110px}.meadow-display{padding:20px 14px;gap:12px}.meadow-display>div:first-child{width:100%}.display-friend{margin-left:0}.display-item{width:80px}.grounding-practice{padding:20px 10px}.grounding-leaves{gap:8px}.grounding-leaves button{width:46px;height:49px}.grounding-leaves button svg{width:24px}.grounding-practice p{font-size:12px}.emotion-game-inner .choice-row .primary{font-size:12px;gap:10px}.emotion-game-inner .secondary{font-size:12px}.joy-garden{padding:22px 13px;gap:14px}.calm-corner .play-top>span{display:none}}
 @media(max-width:370px){.topbar .brand{font-size:17px}.topbar .brand-icon{width:28px;height:33px}.topbar{padding:0 13px}.topbar .sound-button{display:none}.check-in-options button{width:49px}.check-in-options .buddy{width:40px}.topbar nav .nav-button{font-size:9px;padding:10px 7px}.location-info h3{font-size:19px}}
 @media(prefers-reduced-motion:reduce){.location-mascot,.story-mascot,.flower-growing{animation:none!important}.emotion-game *{scroll-behavior:auto}.breathing-flower{transform:none}}
+
+/* Accessibility, Typography Scaling & Contrast Enhancements for WCAG AA (Moodie Meadows) */
+:root {
+  --peach-dark: #8c4e2d;
+  --green-dark: #375b22;
+  --blue-dark: #23586e;
+  --purple-dark: #583d72;
+  --sunshine-dark: #745710;
+}
+
+.peach { --activity-dark: #8c4e2d !important; }
+.green { --activity-dark: #375b22 !important; }
+.blue { --activity-dark: #23586e !important; }
+.purple { --activity-dark: #583d72 !important; }
+.sunshine { --activity-dark: #745710 !important; }
+
+/* Readability - eliminate micro-text (7-9px) and bump to 12px-16px */
+.location-info .card-tag,
+.card-body .card-tag,
+.shop-item .card-tag {
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  letter-spacing: 1px !important;
+  color: var(--activity-dark) !important;
+}
+
+.location-status {
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  line-height: 1.5 !important;
+  color: #3b4e2d !important;
+}
+
+.location-locked .location-status {
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  color: #555e4b !important;
+}
+
+.location-info p,
+.card-body p,
+.shop-item p,
+.collection-friend p,
+.treasure-shelf p {
+  font-size: 14px !important;
+  line-height: 1.6 !important;
+  color: #3f4738 !important;
+}
+
+.story-text {
+  font-size: 16px !important;
+  line-height: 1.85 !important;
+  color: #2e3b26 !important;
+}
+
+.check-in p {
+  font-size: 14px !important;
+  line-height: 1.6 !important;
+  color: #3d4636 !important;
+}
+
+.check-in-options button {
+  min-height: 84px !important;
+  min-width: 64px !important;
+}
+
+.check-in-options span {
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  color: #3b4534 !important;
+}
+
+.meadow-token-balance {
+  font-size: 18px !important;
+  color: #574d23 !important;
+}
+
+.meadow-token-balance > span:last-child {
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  color: #52503a !important;
+}
+
+.adventure-steps small {
+  font-size: 12px !important;
+  font-weight: 600 !important;
+}
+
+.adventure-steps b {
+  width: 28px !important;
+  height: 28px !important;
+  font-size: 12px !important;
+}
+
+.shop-balance {
+  font-size: 15px !important;
+  color: #614e21 !important;
+}
+
+.shop-balance > span {
+  font-size: 13px !important;
+  color: #575239 !important;
+}
+
+.practice-caption,
+.token-breakdown > span,
+.recap-grid p,
+.kindness-bonus p,
+.grounding-practice p,
+.validation-card p {
+  font-size: 14px !important;
+  color: #35422d !important;
+}
+
+.replay-note,
+.kindness-bonus small,
+.token-breakdown small,
+.display-item small {
+  font-size: 12px !important;
+  color: #54604a !important;
+}
+
+.shop-item .primary,
+.shop-item .secondary {
+  font-size: 13px !important;
+  font-weight: 600 !important;
+}
+
+/* Ensure mobile rules don't shrink font sizes back below 12px */
+@media (max-width: 900px) {
+  .location-info .card-tag,
+  .shop-item .card-tag,
+  .card-body .card-tag {
+    font-size: 11px !important;
+  }
+  .location-status {
+    font-size: 12px !important;
+  }
+  .meadow-token-balance > span:last-child {
+    font-size: 11px !important;
+  }
+}
+
+@media (max-width: 760px) {
+  .location-info .card-tag,
+  .shop-item .card-tag,
+  .card-body .card-tag {
+    font-size: 11px !important;
+  }
+  .location-status {
+    font-size: 12px !important;
+  }
+  .adventure-steps small {
+    font-size: 11px !important;
+  }
+  .check-in-options span {
+    font-size: 11px !important;
+  }
+  .token-breakdown > span {
+    font-size: 11px !important;
+  }
+}

@@ -186,7 +186,14 @@ export const shopItems = [
   },
 ] as const
 export type AdventureId = typeof adventures[number]["id"]
-export type Phase = "story" | "identify" | "understand" | "action" | "practice" | "finish"
+export type ActivityId = "slide" | "garden" | "cloud" | "quiz"
+export type Phase =
+  | "story"
+  | "identify"
+  | "understand"
+  | "action"
+  | "practice"
+  | "finish"
 export type Run = {
   phase: Phase
   emotion: number | null
@@ -194,16 +201,23 @@ export type Run = {
   taps: string[]
   seconds: number
 }
-type Save = {
-  version: 1
+export type Save = {
+  version: 2
   tokens: number
   ledger: string[]
   completed: AdventureId[]
+  completedActivities: ActivityId[]
+  stars: number
   runs: Partial<Record<AdventureId, Run>>
   current: AdventureId
   owned: string[]
   equipped: string[]
-  checkIn: { day: string, feeling: string } | null
+  checkIn: { day: string; feeling: string } | null
+  profile: {
+    name: string
+    avatar: number
+  }
+  soundEnabled: boolean
 }
 export const freshRun = (): Run => ({
   phase: "story",
@@ -212,16 +226,23 @@ export const freshRun = (): Run => ({
   taps: [],
   seconds: 0,
 })
-const initial = (): Save => ({
-  version: 1,
+export const initial = (): Save => ({
+  version: 2,
   tokens: 0,
   ledger: [],
   completed: [],
+  completedActivities: [],
+  stars: 0,
   runs: {},
   current: "anger",
   owned: [],
   equipped: [],
   checkIn: null,
+  profile: {
+    name: "",
+    avatar: 0,
+  },
+  soundEnabled: false,
 })
 const key = "moodie-meadows-v1"
 const phases: Phase[] = [
@@ -232,57 +253,103 @@ const phases: Phase[] = [
   "practice",
   "finish",
 ]
+const validActivities: ActivityId[] = ["slide", "garden", "cloud", "quiz"]
+
 function isId(value: unknown): value is AdventureId {
   return adventures.some((a) => a.id === value)
+}
+function isActivityId(value: unknown): value is ActivityId {
+  return validActivities.includes(value as ActivityId)
 }
 function isStrings(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((v) => typeof v === "string")
 }
 
-function load(): Save {
+export function load(): Save {
   try {
     const raw = localStorage.getItem(key)
     if (!raw) return initial()
     const s = JSON.parse(raw)
-    if (
-      s.version !== 1 ||
-      !Number.isSafeInteger(s.tokens) ||
-      s.tokens < 0 ||
-      !isStrings(s.ledger) ||
-      !isStrings(s.completed) ||
-      !s.completed.every(isId) ||
-      !isId(s.current) ||
-      !isStrings(s.owned) ||
-      !isStrings(s.equipped) ||
-      !s.runs ||
-      typeof s.runs !== "object"
-    )
-      return initial()
+    if (!s || typeof s !== "object") return initial()
+
+    // Base validation for common fields
+    const tokens =
+      Number.isSafeInteger(s.tokens) && s.tokens >= 0 ? s.tokens : 0
+    const ledger = isStrings(s.ledger) ? s.ledger : []
+    const completed =
+      Array.isArray(s.completed) && s.completed.every(isId) ? s.completed : []
+    const current = isId(s.current) ? s.current : "anger"
+    const owned = isStrings(s.owned) ? s.owned : []
+    const equipped = isStrings(s.equipped) ? s.equipped : []
+
+    // V2 persistence fields with graceful backward compatibility for V1 data
+    const completedActivities: ActivityId[] =
+      Array.isArray(s.completedActivities) &&
+      s.completedActivities.every(isActivityId)
+        ? s.completedActivities
+        : []
+
+    const stars =
+      Number.isSafeInteger(s.stars) && s.stars >= 0
+        ? s.stars
+        : completedActivities.length * 3
+
+    const profile = {
+      name:
+        s.profile && typeof s.profile.name === "string"
+          ? s.profile.name.slice(0, 25)
+          : typeof s.name === "string"
+            ? s.name.slice(0, 25)
+            : "",
+      avatar:
+        s.profile && Number.isInteger(s.profile.avatar) && s.profile.avatar >= 0 && s.profile.avatar < 3
+          ? s.profile.avatar
+          : Number.isInteger(s.avatar) && s.avatar >= 0 && s.avatar < 3
+            ? s.avatar
+            : 0,
+    }
+
+    const soundEnabled = Boolean(s.soundEnabled)
+
     const runs: Save["runs"] = {}
-    for (const a of adventures) {
-      const r = s.runs[a.id]
-      if (
-        r &&
-        phases.includes(r.phase) &&
-        isStrings(r.taps) &&
-        Number.isInteger(r.seconds) &&
-        r.seconds >= 0 &&
-        (r.emotion === null || Number.isInteger(r.emotion)) &&
-        (r.action === null || Number.isInteger(r.action))
-      ) {
-        runs[a.id] = { ...r, seconds: Math.min(24, r.seconds) }
+    if (s.runs && typeof s.runs === "object") {
+      for (const a of adventures) {
+        const r = s.runs[a.id]
+        if (
+          r &&
+          phases.includes(r.phase) &&
+          isStrings(r.taps) &&
+          Number.isInteger(r.seconds) &&
+          r.seconds >= 0 &&
+          (r.emotion === null || Number.isInteger(r.emotion)) &&
+          (r.action === null || Number.isInteger(r.action))
+        ) {
+          runs[a.id] = { ...r, seconds: Math.min(24, r.seconds) }
+        }
       }
     }
+
+    const checkIn =
+      s.checkIn &&
+      typeof s.checkIn.day === "string" &&
+      typeof s.checkIn.feeling === "string"
+        ? s.checkIn
+        : null
+
     return {
-      ...initial(),
-      ...s,
+      version: 2,
+      tokens,
+      ledger,
+      completed,
+      completedActivities,
+      stars,
       runs,
-      checkIn:
-        s.checkIn &&
-        typeof s.checkIn.day === "string" &&
-        typeof s.checkIn.feeling === "string"
-          ? s.checkIn
-          : null,
+      current,
+      owned,
+      equipped,
+      checkIn,
+      profile,
+      soundEnabled,
     }
   } catch {
     return initial()
@@ -299,25 +366,104 @@ function reward(state: Save, id: AdventureId, kind: keyof typeof values): Save {
     ledger: [...state.ledger, entry],
   }
 }
-function unlocked(s: Save, id: AdventureId) {
-  const i = adventures.findIndex((a) => a.id === id)
-  return i === 0 || s.completed.includes(adventures[i - 1].id)
+
+// Allows open, flexible exploration so children in distress can directly select
+// any emotion adventure, while keeping pedagogical recommendations visible.
+export function unlocked(_s: Save, _id: AdventureId): boolean {
+  return true
+}
+
+export const STORAGE_KEY = "moodie-meadows-v1"
+
+export function applyBuy(s: Save, id: string): Save {
+  const item = shopItems.find((i) => i.id === id)
+  if (!item || s.owned.includes(id) || s.tokens < item.price) return s
+  return {
+    ...s,
+    tokens: s.tokens - item.price,
+    owned: [...s.owned, id],
+    equipped: [...s.equipped, id],
+  }
+}
+
+export function applyEquip(s: Save, id: string): Save {
+  if (!s.owned.includes(id)) return s
+  return {
+    ...s,
+    equipped: s.equipped.includes(id)
+      ? s.equipped.filter((i) => i !== id)
+      : [...s.equipped, id],
+  }
+}
+
+export function applyCompleteActivity(
+  s: Save,
+  id: ActivityId,
+): { state: Save; tokensEarned: number; starsEarned: number; alreadyCompleted: boolean } {
+  if (s.completedActivities.includes(id)) {
+    return { state: s, tokensEarned: 0, starsEarned: 0, alreadyCompleted: true }
+  }
+  const ledgerEntry = `${id}:extra_activity`
+  const grantTokens = !s.ledger.includes(ledgerEntry)
+  const nextTokens = grantTokens ? s.tokens + 15 : s.tokens
+  const nextLedger = grantTokens ? [...s.ledger, ledgerEntry] : s.ledger
+  return {
+    state: {
+      ...s,
+      tokens: nextTokens,
+      completedActivities: [...s.completedActivities, id],
+      stars: s.stars + 1,
+      ledger: nextLedger,
+    },
+    tokensEarned: grantTokens ? 15 : 0,
+    starsEarned: 1,
+    alreadyCompleted: false,
+  }
+}
+
+export function applySaveProfile(s: Save, name: string, avatar: number): Save {
+  return {
+    ...s,
+    profile: {
+      name: name.slice(0, 25),
+      avatar: Math.max(0, Math.min(2, avatar)),
+    },
+  }
+}
+
+export function applySetSoundEnabled(s: Save, enabled: boolean): Save {
+  return {
+    ...s,
+    soundEnabled: enabled,
+  }
+}
+
+export function resetProgress(): Save {
+  const fresh = initial()
+  try {
+    localStorage.removeItem(STORAGE_KEY)
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(fresh))
+  } catch {
+    // Fallback
+  }
+  return fresh
 }
 
 export function useMeadow() {
   const [state, setState] = useState(load)
   const [storageError, setStorageError] = useState(false)
+
   useEffect(() => {
     try {
-      localStorage.setItem(key, JSON.stringify(state))
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
       setStorageError(false)
     } catch {
       setStorageError(true)
     }
   }, [state])
+
   const updateRun = (id: AdventureId, fn: (run: Run) => Run) => {
     setState((s) => {
-      if (!unlocked(s, id)) return s
       const run = fn(s.runs[id] || freshRun())
       const next = { ...s, runs: { ...s.runs, [id]: run } }
       // A skill earns its tokens as soon as it is practised, even before finishing.
@@ -326,23 +472,20 @@ export function useMeadow() {
         : next
     })
   }
+
   return {
     state,
     storageError,
     isUnlocked: (id: AdventureId) => unlocked(state, id),
     begin(id: AdventureId, replay = false) {
-      setState((s) =>
-        !unlocked(s, id)
-          ? s
-          : {
-              ...s,
-              current: id,
-              runs: {
-                ...s.runs,
-                [id]: replay ? freshRun() : s.runs[id] || freshRun(),
-              },
-            },
-      )
+      setState((s) => ({
+        ...s,
+        current: id,
+        runs: {
+          ...s.runs,
+          [id]: replay ? freshRun() : s.runs[id] || freshRun(),
+        },
+      }))
     },
     phase(id: AdventureId, phase: Phase) {
       updateRun(id, (r) => ({ ...r, phase }))
@@ -396,28 +539,10 @@ export function useMeadow() {
       )
     },
     buy(id: string) {
-      setState((s) => {
-        const item = shopItems.find((i) => i.id === id)
-        if (!item || s.owned.includes(id) || s.tokens < item.price) return s
-        return {
-          ...s,
-          tokens: s.tokens - item.price,
-          owned: [...s.owned, id],
-          equipped: [...s.equipped, id],
-        }
-      })
+      setState((s) => applyBuy(s, id))
     },
     equip(id: string) {
-      setState((s) =>
-        !s.owned.includes(id)
-          ? s
-          : {
-              ...s,
-              equipped: s.equipped.includes(id)
-                ? s.equipped.filter((i) => i !== id)
-                : [...s.equipped, id],
-            },
-      )
+      setState((s) => applyEquip(s, id))
     },
     checkIn(feeling: string) {
       setState((s) => ({
@@ -425,9 +550,23 @@ export function useMeadow() {
         checkIn: { day: new Date().toLocaleDateString("en-CA"), feeling },
       }))
     },
+    completeActivity(id: ActivityId) {
+      setState((s) => applyCompleteActivity(s, id).state)
+    },
+    saveProfile(name: string, avatar: number) {
+      setState((s) => applySaveProfile(s, name, avatar))
+    },
+    setSoundEnabled(enabled: boolean) {
+      setState((s) => applySetSoundEnabled(s, enabled))
+    },
+    resetProgress() {
+      const fresh = resetProgress()
+      setState(fresh)
+    },
   }
 }
 export type Meadow = ReturnType<typeof useMeadow>
+
 export function emotionChoices(id: AdventureId) {
   const all = [
     { label: "Angry", mood: "angry", tint: "#edb29b" },
@@ -442,6 +581,7 @@ export function emotionChoices(id: AdventureId) {
       c.label === adventures.find((a) => a.id === id)!.feeling,
   )
 }
+
 export function skillReady(id: AdventureId, r: Run) {
   const required = {
     anger: ["words", "support"],
@@ -450,8 +590,17 @@ export function skillReady(id: AdventureId, r: Run) {
     anxiety: ["flower", "cloud", "tree", "star", "hill", "step"],
     happiness: ["win", "share", "kind"],
   }[id]
+
+  // For anger, children can finish if they took gentle breaths (>=8s or >=24s),
+  // chose softening hands, OR clicked "I'm ready" (breathe_ready).
+  // This eliminates the usability trap where children get stuck if they pause the breath timer.
+  const angerBreatheDone =
+    r.seconds >= 8 ||
+    r.taps.includes("alternative") ||
+    r.taps.includes("breathe_ready")
+
   return (
     required.every((t) => r.taps.includes(t)) &&
-    (id !== "anger" || r.seconds >= 24 || r.taps.includes("alternative"))
+    (id !== "anger" || angerBreatheDone)
   )
 }

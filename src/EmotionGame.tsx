@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { Buddy, Icon } from "./MeadowArt"
+import { Buddy, Icon, NarrationButton } from "./MeadowArt"
 import {
   adventures,
   emotionChoices,
@@ -253,15 +253,23 @@ export function EmotionMap({
       <div className="emotion-locations">
         {adventures.map((a, i) => {
           const done = state.completed.includes(a.id)
-          const locked = !meadow.isUnlocked(a.id)
+          const inProgress =
+            state.runs[a.id]?.phase && state.runs[a.id]?.phase !== "finish"
+          const isRecommended = i === 0 && !state.completed.length
           return (
             <button
               key={a.id}
-              className={`location-card ${a.color} ${
-                locked ? "location-locked" : ""
-              }`}
-              disabled={locked}
+              className={`location-card ${a.color} ${done ? "location-done" : ""}`}
               onClick={() => play(a.id)}
+              aria-label={`${a.title}: Meet ${a.mascot}. ${
+                done
+                  ? "Explored, click to replay"
+                  : inProgress
+                    ? "In progress, click to continue"
+                    : isRecommended
+                      ? "Recommended starting place, click to explore"
+                      : "Ready to explore, click to play"
+              }`}
             >
               <div className="location-picture">
                 <LocationArt id={a.id} />
@@ -277,14 +285,14 @@ export function EmotionMap({
                 <h3>{a.title}</h3>
                 <p>Meet {a.mascot}</p>
                 <span className="location-status">
-                  {locked
-                    ? `After ${adventures[i - 1].title}`
-                    : done
-                      ? "Explored · Replay"
-                      : state.runs[a.id]
-                        ? "Your adventure · Continue"
-                        : "Your next adventure"}
-                  {!locked && <Icon name="arrow" size={17} />}
+                  {done
+                    ? "Explored · Replay"
+                    : inProgress
+                      ? "In progress · Continue"
+                      : isRecommended
+                        ? "Recommended first · Let’s play"
+                        : "Ready to explore · Let’s play"}
+                  <Icon name="arrow" size={17} />
                 </span>
               </div>
             </button>
@@ -330,10 +338,17 @@ export function FeelingsCheckIn({ meadow }: { meadow: Meadow }) {
   ]
   return (
     <section className="check-in">
-      <div>
-        <span className="eyebrow small">A LITTLE HELLO TO YOURSELF</span>
-        <h2>How are you feeling today?</h2>
-        <p>Any feeling is okay. You can skip or change your choice.</p>
+      <div className="check-in-header">
+        <div>
+          <span className="eyebrow small">A LITTLE HELLO TO YOURSELF</span>
+          <h2>How are you feeling today?</h2>
+          <p>Any feeling is okay. You can skip or change your choice.</p>
+        </div>
+        <NarrationButton
+          text="How are you feeling today? Any feeling is okay. You can choose happy, sad, angry, worried, or not sure."
+          id="check-in-prompt"
+          label="check-in guidance"
+        />
       </div>
       <div className="check-in-options">
         {options.map((o) => (
@@ -477,7 +492,14 @@ export default function EmotionGame({
                   <span className="story-name">Hello, I’m {a.mascot}!</span>
                 </div>
                 <span className="eyebrow">LET’S MEET A MEADOW FRIEND</span>
-                <h2>A little moment in {a.mascot}’s day</h2>
+                <div className="story-heading-row">
+                  <h2>A little moment in {a.mascot}’s day</h2>
+                  <NarrationButton
+                    text={`${a.mascot}’s story: ${a.story}`}
+                    id={`story-${id}`}
+                    label={`${a.mascot}’s story`}
+                  />
+                </div>
                 <p className="story-text">{a.story}</p>
                 <button className="primary" onClick={() => advance("identify")}>
                   How might {a.mascot} feel? <Icon name="arrow" />
@@ -648,13 +670,22 @@ export default function EmotionGame({
                       {Math.floor(run.seconds / 8)} of 3 breaths. Keep breathing
                       comfortably. Stop if it doesn’t feel right.
                     </p>
-                    {run.seconds < 24 && !has("alternative") && (
+                    {run.seconds < 24 && !has("alternative") && !has("breathe_ready") && (
                       <div className="choice-row">
                         <button
                           className="secondary"
                           onClick={() => setBreathing(!breathing)}
                         >
                           {breathing ? "Pause breaths" : "Start gentle breaths"}
+                        </button>
+                        <button
+                          className="secondary"
+                          onClick={() => {
+                            tap("breathe_ready")
+                            setBreathing(false)
+                          }}
+                        >
+                          <Icon name="check" size={17} /> I feel calmer now · I'm ready
                         </button>
                         <button
                           className="secondary"
@@ -666,6 +697,11 @@ export default function EmotionGame({
                           Breathing isn’t for me · soften my hands instead
                         </button>
                       </div>
+                    )}
+                    {(has("breathe_ready") || run.seconds >= 8) && !has("alternative") && (
+                      <p role="status" className="practice-caption ready-caption">
+                        <Icon name="check" size={16} /> Lovely pause! You listened to your body. Tap the practice phrases below to finish.
+                      </p>
                     )}
                     {has("alternative") && (
                       <p role="status" className="practice-caption">
@@ -1194,9 +1230,16 @@ export function CalmCorner({
           You don’t need to change your feeling. Try a tool, rest, or ask a
           trusted adult to sit with you.
         </p>
-        <button className="primary" onClick={breathe}>
-          Breathe with the cloud <Icon name="heart" />
-        </button>
+        <div className="calm-narration-row">
+          <button className="primary" onClick={breathe}>
+            Breathe with the cloud <Icon name="heart" />
+          </button>
+          <NarrationButton
+            text="A moment, just for you. You don’t need to change your feeling. Try a tool, rest, or ask a trusted adult to sit with you. Notice five things around you, and tap a leaf for each one."
+            id="calm-corner-voice"
+            label="Calm Corner message"
+          />
+        </div>
         <div className="grounding-practice">
           <h2>Five little things, right here.</h2>
           <p>

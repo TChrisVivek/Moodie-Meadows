@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react"
-import { Buddy, Icon, Scene } from "./MeadowArt"
+import { Buddy, Icon, NarrationButton, Scene } from "./MeadowArt"
+import { narration } from "./narration"
 import EmotionGame, {
   EmotionMap,
   FeelingsCheckIn,
@@ -130,9 +131,12 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>("map")
   const [started, setStarted] = useState(false)
   const [welcome, setWelcome] = useState(false)
-  const [name, setName] = useState("")
-  const [avatar, setAvatar] = useState(0)
-  const [completed, setCompleted] = useState<Activity[]>([])
+  const [confirmReset, setConfirmReset] = useState(false)
+  const [name, setName] = useState(() => meadow.state.profile.name || "")
+  const [avatar, setAvatar] = useState(() => meadow.state.profile.avatar || 0)
+  const completed = meadow.state.completedActivities
+  const stars = meadow.state.stars
+  const sound = meadow.state.soundEnabled
   const [active, setActive] = useState<Activity>("slide")
   const [stage, setStage] = useState(0)
   const [movement, setMovement] = useState<string | null>(null)
@@ -144,26 +148,37 @@ export default function App() {
   const scored = useRef(new Set<number>())
   const [breathing, setBreathing] = useState(false)
   const [seconds, setSeconds] = useState(0)
-  const [sound, setSound] = useState(false)
   const [help, setHelp] = useState(false)
   const titleRef = useRef<HTMLDivElement>(null)
+
   useEffect(() => {
     document.title = "Moodie Meadows"
   }, [])
+
   useEffect(() => {
+    narration.stop()
     titleRef.current?.focus()
     window.scrollTo({ top: 0, behavior: "smooth" })
   }, [screen])
+
+  useEffect(() => {
+    if (meadow.state.profile.name && !name) {
+      setName(meadow.state.profile.name)
+    }
+  }, [meadow.state.profile.name, name])
+
   useEffect(() => {
     if (!breathing || paused || screen !== "cloud") return
     const timer = window.setInterval(() => setSeconds((s) => s + 1), 1000)
     return () => window.clearInterval(timer)
   }, [breathing, paused, screen])
+
   useEffect(() => {
     if (seconds >= 24) setBreathing(false)
   }, [seconds])
-  const stars = completed.length * 3
+
   const colors = ["#f7cd64", "#c6b3dc", "#b5cda0"]
+
   function enter(id: Activity) {
     setActive(id)
     setStage(0)
@@ -183,26 +198,34 @@ export default function App() {
     setBreathing(false)
     setScreen(id)
   }
+
   function finish() {
-    setCompleted((prev) => (prev.includes(active) ? prev : [...prev, active]))
+    meadow.completeActivity(active)
     setScreen("results")
     setBreathing(false)
   }
+
+  function toggleSound() {
+    const next = !sound
+    meadow.setSoundEnabled(next)
+    if (!next) {
+      narration.stop()
+    }
+  }
+
   function answer(i: number) {
     if (selected !== null) return
     setSelected(i)
-    if (
-      i === questions[order[question]].answer &&
-      !scored.current.has(question)
-    ) {
+    const isCorrect = i === questions[order[question]].answer
+    if (isCorrect && !scored.current.has(question)) {
       scored.current.add(question)
       setScore((s) => s + 1)
-      if (sound && "speechSynthesis" in window) {
-        window.speechSynthesis.cancel()
-        window.speechSynthesis.speak(
-          new SpeechSynthesisUtterance("Lovely thinking!"),
-        )
-      }
+    }
+    if (sound) {
+      const speechText = isCorrect
+        ? `Lovely thinking! ${questions[order[question]].why}`
+        : `Let’s look a little closer. That’s a thoughtful try. ${questions[order[question]].why}`
+      narration.speak(speechText, `quiz-answer-${question}`)
     }
   }
   function next() {
@@ -299,10 +322,12 @@ export default function App() {
           <button
             className={`sound-button ${sound ? "on" : ""}`}
             aria-label={
-              sound ? "Turn voice feedback off" : "Turn voice feedback on"
+              sound
+                ? "Turn voice feedback and narration off"
+                : "Turn voice feedback and narration on"
             }
             aria-pressed={sound}
-            onClick={() => setSound(!sound)}
+            onClick={toggleSound}
           >
             <Icon name="sound" />
             {!sound && <span className="mute-line" />}
@@ -330,6 +355,7 @@ export default function App() {
                 <h1>
                   {started ||
                   meadow.state.completed.length > 0 ||
+                  meadow.state.completedActivities.length > 0 ||
                   meadow.state.runs.anger ? (
                     <>
                       Welcome back,
@@ -349,19 +375,26 @@ export default function App() {
                   <br />
                   Let’s explore the wonderful world of feelings!
                 </p>
-                <button
-                  className="primary"
-                  onClick={() =>
-                    started || meadow.state.runs.anger
-                      ? continueEmotion()
-                      : setWelcome(true)
-                  }
-                >
-                  {started || meadow.state.runs.anger
-                    ? "Continue Adventure"
-                    : "Start Adventure"}{" "}
-                  <Icon name="arrow" size={21} />
-                </button>
+                <div className="hero-action-row">
+                  <button
+                    className="primary"
+                    onClick={() =>
+                      started || meadow.state.runs.anger
+                        ? continueEmotion()
+                        : setWelcome(true)
+                    }
+                  >
+                    {started || meadow.state.runs.anger
+                      ? "Continue Adventure"
+                      : "Start Adventure"}{" "}
+                    <Icon name="arrow" size={21} />
+                  </button>
+                  <NarrationButton
+                    text={`Welcome to Moodie Meadows! Little adventures, big feelings. Wiggle, wonder, breathe, and grow. Let’s explore the wonderful world of feelings!`}
+                    id="hero-intro"
+                    label="welcome message"
+                  />
+                </div>
                 <div className="hero-note">
                   <Icon name="heart" size={15} /> Every feeling is welcome here.
                 </div>
@@ -639,7 +672,14 @@ export default function App() {
                         style={{ width: `${((question + 1) / count) * 100}%` }}
                       />
                     </div>
-                    <h2>{current.text}</h2>
+                    <div className="quiz-question-row">
+                      <h2>{current.text}</h2>
+                      <NarrationButton
+                        text={`${current.text}. Look for clues. Options: ${current.options.join(", ")}.`}
+                        id={`question-${question}`}
+                        label="question and options"
+                      />
+                    </div>
                     <p className="question-hint">
                       Look for clues. Choose what you think.
                     </p>
@@ -721,37 +761,41 @@ export default function App() {
                         ? "A lovely little moment of calm."
                         : breathing
                           ? seconds % 8 < 4
-                            ? "Breathe in…"
-                            : "Breathe out…"
-                          : "Let’s float for three gentle breaths."}
+                            ? "Breathe in gently…"
+                            : "Breathe out slowly…"
+                          : "Let’s float for gentle breaths."}
                     </h2>
                     <p>
                       {seconds >= 24
                         ? "Notice how your body feels. Every feeling is still welcome."
-                        : `${Math.min(Math.floor(seconds / 8), 3)} of 3 breaths · You can stop whenever you like.`}
+                        : `${Math.min(Math.floor(seconds / 8) + 1, 3)} of 3 breaths · You can finish whenever you feel ready.`}
                     </p>
-                    {seconds >= 24 ? (
-                      <button className="primary" onClick={finish}>
-                        Collect my cloud sticker <Icon name="star" />
+                    <div className="choice-row breathing-controls">
+                      <button
+                        className="primary"
+                        onClick={() => setBreathing(!breathing)}
+                      >
+                        {breathing
+                          ? "Pause breathing"
+                          : seconds
+                            ? "Keep breathing"
+                            : "Start breathing"}
+                        <Icon name="heart" />
                       </button>
-                    ) : (
-                      <div className="choice-row">
-                        <button
-                          className="primary"
-                          onClick={() => setBreathing(!breathing)}
-                        >
-                          {breathing
-                            ? "Pause breathing"
-                            : seconds
-                              ? "Keep breathing"
-                              : "Start breathing"}
-                          <Icon name="heart" />
-                        </button>
-                        <button className="secondary" onClick={finish}>
-                          Finish for now
-                        </button>
-                      </div>
-                    )}
+                      <button
+                        className="secondary"
+                        onClick={finish}
+                        aria-label="Finish breathing and collect sticker"
+                      >
+                        <Icon name="star" /> I'm ready to finish · Collect sticker
+                      </button>
+                    </div>
+                    <NarrationButton
+                      text="Follow the cloud gently. Breathe in as the cloud grows, and breathe out as it softens. You can stop whenever your body feels ready."
+                      id="cloud-breathe-guide"
+                      label="breathing guidance"
+                      className="mt-4"
+                    />
                   </div>
                 )}
               </>
@@ -850,8 +894,8 @@ export default function App() {
               Back to the meadow <Icon name="home" />
             </button>
             <p className="safety-note">
-              Emotion adventure friends and shop treasures are saved on this
-              device. Original activity stickers stay for this play session.
+              All your stickers, stars, Meadow Tokens, and treasures are saved
+              safely on this device. You can return and continue anytime!
             </p>
           </section>
         )}
@@ -860,9 +904,18 @@ export default function App() {
             <Icon name="flower" size={18} /> A little play. A little learning. A
             whole lot of you.
           </span>
-          <button onClick={() => setHelp(true)}>
-            A note for grown-ups <Icon name="heart" size={16} />
-          </button>
+          <div className="footer-links">
+            <button onClick={() => setHelp(true)}>
+              A note for grown-ups <Icon name="heart" size={16} />
+            </button>
+            <button
+              onClick={() => setConfirmReset(true)}
+              className="footer-reset-btn"
+              aria-label="Reset all meadow progress"
+            >
+              <Icon name="refresh" size={15} /> Reset meadow
+            </button>
+          </div>
         </footer>
       </main>
       {welcome && (
@@ -919,6 +972,7 @@ export default function App() {
             <button
               className="primary"
               onClick={() => {
+                meadow.saveProfile(name, avatar)
                 setStarted(true)
                 setWelcome(false)
               }}
@@ -928,6 +982,48 @@ export default function App() {
             <p className="safety-note">
               No name needed. Just bring your curiosity.
             </p>
+          </section>
+        </div>
+      )}
+      {confirmReset && (
+        <div className="modal-backdrop">
+          <section
+            className="welcome-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="reset-title"
+          >
+            <button
+              className="close-button"
+              aria-label="Close dialog"
+              onClick={() => setConfirmReset(false)}
+            >
+              ×
+            </button>
+            <Icon name="refresh" size={42} />
+            <h2 id="reset-title">Start a fresh adventure?</h2>
+            <p>
+              This will clear your saved tokens, stars, and stickers on this
+              browser so you can explore the meadow from the very beginning.
+            </p>
+            <div className="choice-row">
+              <button
+                className="secondary"
+                onClick={() => setConfirmReset(false)}
+              >
+                Keep my progress
+              </button>
+              <button
+                className="primary danger-btn"
+                onClick={() => {
+                  meadow.resetProgress()
+                  setConfirmReset(false)
+                  setScreen("map")
+                }}
+              >
+                Yes, start fresh
+              </button>
+            </div>
           </section>
         </div>
       )}

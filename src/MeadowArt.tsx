@@ -1,3 +1,5 @@
+import { useNarration } from "./narration"
+
 type Activity = "slide" | "garden" | "cloud" | "quiz"
 
 export function Icon({ name, size = 22 }: { name: string, size?: number }) {
@@ -42,10 +44,50 @@ export function Icon({ name, size = 22 }: { name: string, size?: number }) {
           <circle cx="12" cy="7" r="5" />
           <circle cx="12" cy="7" r="1" />
         </>
+      ) : name === "refresh" ? (
+        <>
+          <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+          <path d="M21 3v5h-5" />
+          <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+          <path d="M3 21v-5h5" />
+        </>
       ) : (
         <path d="m8 5 7 7-7 7" />
       )}
     </svg>
+  )
+}
+
+export function NarrationButton({
+  text,
+  id,
+  label = "Read aloud",
+  className = "",
+}: {
+  text: string
+  id: string
+  label?: string
+  className?: string
+}) {
+  const { isSpeaking, currentId, speak, stop, supported } = useNarration()
+  const active = isSpeaking && currentId === id
+
+  if (!supported) return null
+
+  return (
+    <button
+      type="button"
+      className={`narration-button ${active ? "speaking" : ""} ${className}`}
+      onClick={(e) => {
+        e.stopPropagation()
+        active ? stop() : speak(text, id)
+      }}
+      aria-label={active ? `Stop reading ${label}` : `Read aloud: ${label}`}
+      title={active ? "Stop reading" : "Read aloud"}
+    >
+      <Icon name="sound" size={17} />
+      <span>{active ? "Stop" : "Listen"}</span>
+    </button>
   )
 }
 
