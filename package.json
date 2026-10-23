@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types --test tests/meadow-state.test.mjs",
+    "test": "node --max-old-space-size=2048 --experimental-strip-types --test tests/meadow-state.test.mjs",
+    "test:e2e": "node tests/verify-e2e.mjs",
     "format": "oxfmt"
   },
   "dependencies": {

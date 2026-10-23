@@ -2,7 +2,7 @@ import { useNarration } from "./narration"
 
 type Activity = "slide" | "garden" | "cloud" | "quiz"
 
-export function Icon({ name, size = 22 }: { name: string, size?: number }) {
+export function Icon({ name, size = 22 }: { name: string; size?: number }) {
   return (
     <svg
       width={size}
@@ -60,16 +60,23 @@ export function Icon({ name, size = 22 }: { name: string, size?: number }) {
 
 export function NarrationButton({
   text,
+
   id,
+
   label = "Read aloud",
+
   className = "",
 }: {
   text: string
+
   id: string
+
   label?: string
+
   className?: string
 }) {
   const { isSpeaking, currentId, speak, stop, supported } = useNarration()
+
   const active = isSpeaking && currentId === id
 
   if (!supported) return null
@@ -80,6 +87,7 @@ export function NarrationButton({
       className={`narration-button ${active ? "speaking" : ""} ${className}`}
       onClick={(e) => {
         e.stopPropagation()
+
         active ? stop() : speak(text, id)
       }}
       aria-label={active ? `Stop reading ${label}` : `Read aloud: ${label}`}
@@ -91,13 +99,97 @@ export function NarrationButton({
   )
 }
 
+export function NarrationControls({
+  text,
+
+  id,
+
+  label = "this section",
+
+  className = "",
+}: {
+  text: string
+
+  id: string
+
+  label?: string
+
+  className?: string
+}) {
+  const { isSpeaking, currentId, speak, stop, supported } = useNarration()
+
+  const active = isSpeaking && currentId === id
+
+  if (!supported) return null
+
+  return (
+    <div
+      className={`narration-controls ${className}`}
+      role="group"
+      aria-label={`Voice narration controls for ${label}`}
+    >
+      {!active ? (
+        <button
+          type="button"
+          className="narration-button play-btn"
+          onClick={(e) => {
+            e.stopPropagation()
+
+            speak(text, id)
+          }}
+          aria-label={`Play voice for ${label}`}
+          title="Play voice"
+        >
+          <Icon name="sound" size={16} />
+          <span>Play</span>
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="narration-button stop-btn speaking"
+          onClick={(e) => {
+            e.stopPropagation()
+
+            stop()
+          }}
+          aria-label={`Stop voice for ${label}`}
+          title="Stop voice"
+        >
+          <Icon name="sound" size={16} />
+          <span>Stop</span>
+        </button>
+      )}
+      <button
+        type="button"
+        className="narration-button replay-btn"
+        onClick={(e) => {
+          e.stopPropagation()
+
+          stop()
+
+          window.setTimeout(() => speak(text, id), 60)
+        }}
+        aria-label={`Replay voice for ${label}`}
+        title="Replay from beginning"
+      >
+        <Icon name="refresh" size={14} />
+        <span>Replay</span>
+      </button>
+    </div>
+  )
+}
+
 export function Buddy({
   mood = "happy",
+
   color = "#f7cd64",
+
   kind = "blob",
 }: {
   mood?: string
+
   color?: string
+
   kind?: string
 }) {
   return (
@@ -179,9 +271,11 @@ export function Buddy({
 
 export function Scene({
   type,
+
   hero = false,
 }: {
   type: Activity
+
   hero?: boolean
 }) {
   return (

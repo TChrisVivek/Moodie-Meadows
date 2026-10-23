@@ -142,6 +142,21 @@ button:focus-visible, input:focus-visible {
   transition: all 0.2s ease;
 }
 
+.narration-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.narration-controls .narration-button {
+  padding: 8px 13px;
+}
+
+.narration-controls .replay-btn {
+  background: #fbf9f2;
+}
+
 .narration-button:hover {
   background: #e3ebd7;
   color: #2e4024;
