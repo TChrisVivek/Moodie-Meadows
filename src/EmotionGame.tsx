@@ -292,7 +292,12 @@ export default function EmotionGame({
   const run = meadow.state.runs[id] || freshRun()
   const [paused, setPaused] = useState(false)
   const isCompleted = run.phase === "finish"
-  const alreadyCompleted = meadow.state.ledger.includes(`${id}:complete`)
+  // What THIS play-through actually added (set by applyCompleteAdventure).
+  // Checking the ledger here would always say "replay", because the reward
+  // entry is written before the celebration renders.
+  const earnedTokens = run.earned?.tokens ?? 0
+  const earnedStars = run.earned?.stars ?? 0
+  const alreadyCompleted = earnedTokens === 0 && earnedStars === 0
 
   const currentIndex = adventures.findIndex((v) => v.id === id)
   const nextAdventure = adventures[currentIndex + 1]
@@ -346,8 +351,8 @@ export default function EmotionGame({
           /* Celebration & Reward Screen */
           <MiniGameCelebration
             adventure={a}
-            tokensEarned={30}
-            starsEarned={3}
+            tokensEarned={earnedTokens}
+            starsEarned={earnedStars}
             alreadyCompleted={alreadyCompleted}
             onContinue={home}
             onReplay={() => {

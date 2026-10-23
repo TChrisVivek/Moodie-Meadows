@@ -1,509 +1,495 @@
 // tests/verify-e2e.mjs - Complete End-to-End Verification of Moodie Meadows
-import { CDPClient } from './cdp-helper.mjs';
+//
+// Requires the production preview server: `npm run build && npm run preview -- --port 4173`
+// (override the URL with E2E_BASE_URL).
+//
+// Determinism rules followed here:
+//  - Runs in an isolated, throwaway browser profile (see cdp-helper.mjs), and
+//    additionally clears ONLY this app's localStorage key before starting, so
+//    every run begins as a genuinely fresh player.
+//  - Every assertion waits for an observable state (DOM class, text, saved
+//    data) instead of sleeping for a fixed time.
+//  - Token/star/completion numbers are read from the app's real saved state
+//    AND the on-screen HUD at the same moment, and must agree.
+import { CDPClient, launchIsolatedBrowser } from './cdp-helper.mjs';
 import fs from 'node:fs';
 
+const BASE_URL = (process.env.E2E_BASE_URL || 'http://localhost:4173/').replace(/\/?$/, '/');
 const SCREENSHOT_DIR = 'tests/screenshots';
-fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
+const RESULTS_FILE = 'tests/verification-results.json';
+
+// ---------------------------------------------------------------------------
+// Derive the storage key and reward constants from the app source, so the test
+// can never silently read the wrong key (the previous suite read a key the app
+// never wrote, which is why it reported "0 completed landmarks").
+// ---------------------------------------------------------------------------
+const stateSource = fs.readFileSync('src/meadowState.ts', 'utf8');
+function sourceConst(regex, name) {
+  const m = stateSource.match(regex);
+  if (!m) throw new Error(`Could not read ${name} from src/meadowState.ts; update tests/verify-e2e.mjs.`);
+  return m[1];
+}
+const STORAGE_KEY = sourceConst(/export const STORAGE_KEY\s*=\s*["']([^"']+)["']/, 'STORAGE_KEY');
+const ADVENTURE_STARS = Number(sourceConst(/export const ADVENTURE_STARS\s*=\s*(\d+)/, 'ADVENTURE_STARS'));
+const rewardBlock = sourceConst(/export const rewardValues\s*=\s*\{([^}]*)\}/, 'rewardValues');
+const rewardOf = (k) => Number((rewardBlock.match(new RegExp(`${k}\\s*:\\s*(\\d+)`)) || [])[1]);
+const ADVENTURE_TOKENS = rewardOf('identify') + rewardOf('skill') + rewardOf('complete');
+if (!Number.isInteger(ADVENTURE_TOKENS) || ADVENTURE_TOKENS <= 0) {
+  throw new Error('Could not derive ADVENTURE_TOKENS from rewardValues in src/meadowState.ts');
+}
+
+const ADVENTURES = [
+  { id: 'anger', station: 1, name: 'Anger Volcano' },
+  { id: 'stress', station: 2, name: 'Stress Mountain' },
+  { id: 'sadness', station: 3, name: 'Tear River' },
+  { id: 'anxiety', station: 4, name: 'Worry Woods' },
+  { id: 'happiness', station: 5, name: 'Spark Summit' },
+];
+
+/** One evaluate call → saved state + HUD read at the same instant. */
+const SNAPSHOT_JS = `(() => {
+  const raw = localStorage.getItem(${JSON.stringify(STORAGE_KEY)});
+  let saved = null;
+  try { saved = raw ? JSON.parse(raw) : null; } catch { saved = null; }
+  const firstInt = (sel) => {
+    const t = document.querySelector(sel)?.textContent;
+    if (t == null) return null;
+    const m = t.match(/\\d+/);
+    return m ? parseInt(m[0], 10) : null;
+  };
+  return {
+    hasSave: !!saved,
+    hudTokens: firstInt('.meadow-token-balance b'),
+    hudStars: firstInt('.star-total b'),
+    savedTokens: saved ? saved.tokens : null,
+    savedStars: saved ? saved.stars : null,
+    completed: saved && Array.isArray(saved.completed) ? saved.completed : [],
+    completedActivities: saved && Array.isArray(saved.completedActivities) ? saved.completedActivities : [],
+    owned: saved && Array.isArray(saved.owned) ? saved.owned : [],
+    onMap: !!document.querySelector('.emotion-map-world'),
+    completedCards: document.querySelectorAll('.map-landmark-card.completed').length,
+  };
+})()`;
+
+/** Internal consistency of a snapshot, independent of expected values. */
+function consistencyProblems(s) {
+  const problems = [];
+  if (!s.hasSave) problems.push(`no saved state under "${STORAGE_KEY}"`);
+  if (s.hudTokens !== s.savedTokens) problems.push(`HUD tokens ${s.hudTokens} != saved ${s.savedTokens}`);
+  if (s.hudStars !== s.savedStars) problems.push(`HUD stars ${s.hudStars} != saved ${s.savedStars}`);
+  if (new Set(s.completed).size !== s.completed.length) problems.push(`duplicate ids in completed: ${s.completed}`);
+  const expectedStars = s.completed.length * ADVENTURE_STARS + s.completedActivities.length;
+  if (s.savedStars !== expectedStars) {
+    problems.push(`stars ${s.savedStars} != ${s.completed.length} completed x ${ADVENTURE_STARS} + ${s.completedActivities.length} activities`);
+  }
+  if (s.onMap && s.completedCards !== s.completed.length) {
+    problems.push(`map shows ${s.completedCards} completed cards but save has ${s.completed.length}`);
+  }
+  return problems;
+}
+
+const fmt = (s) =>
+  `tokens=${s.savedTokens} (HUD ${s.hudTokens}), stars=${s.savedStars} (HUD ${s.hudStars}), completed=[${s.completed.join(', ')}]`;
 
 async function runVerification() {
   console.log('=== STARTING MOODIE MEADOWS REAL BROWSER E2E VERIFICATION ===\n');
-  const results = [];
+  console.log(`Base URL: ${BASE_URL}  |  Storage key: ${STORAGE_KEY}  |  Reward/adventure: ${ADVENTURE_TOKENS} tokens, ${ADVENTURE_STARS} stars\n`);
+  fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
 
-  const record = (feature, testPerformed, result, evidence) => {
+  const results = [];
+  const record = (feature, testPerformed, passed, evidence) => {
+    const result = passed ? 'PASS' : 'FAIL';
     results.push({ feature, testPerformed, result, evidence });
-    const mark = result === 'PASS' ? '✅' : result === 'FAIL' ? '❌' : '⚠️';
-    console.log(`${mark} [${result}] ${feature} -> ${testPerformed}: ${evidence}`);
+    console.log(`${passed ? '✅' : '❌'} [${result}] ${feature} -> ${testPerformed}: ${evidence}`);
   };
 
+  // Preflight: fail clearly if the preview server is not running.
+  try {
+    const res = await fetch(BASE_URL);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  } catch (err) {
+    console.error(`❌ Preview server not reachable at ${BASE_URL} (${err.message}).`);
+    console.error('   Start it with: npm run build && npm run preview -- --port 4173');
+    process.exitCode = 1;
+    return;
+  }
+
+  let browser;
   let client;
   try {
-    const target = await CDPClient.findTarget();
-    console.log(`Connecting directly to Chrome DevTools Protocol (${target.id})...`);
+    browser = await launchIsolatedBrowser();
+    console.log(`Launched isolated headless browser (port ${browser.port}, temp profile ${browser.profileDir})`);
+    const target = await CDPClient.findTarget(browser.port);
     client = new CDPClient(target.webSocketDebuggerUrl);
     await client.connect();
     await client.enableStandardDomains();
 
-    // 1. Initial Desktop Viewport
+    /** Waits until HUD and saved state agree, then returns the snapshot. */
+    const settledSnapshot = async (timeoutMs = 6000) => {
+      const deadline = Date.now() + timeoutMs;
+      let snap;
+      do {
+        snap = await client.evaluate(SNAPSHOT_JS);
+        if (consistencyProblems(snap).length === 0) return snap;
+        await client.wait(100);
+      } while (Date.now() < deadline);
+      return snap; // caller reports the inconsistency
+    };
+
+    /** Asserts a snapshot is consistent AND matches expected totals. */
+    const expectState = (snap, { tokens, stars, completed }) => {
+      const problems = consistencyProblems(snap);
+      if (snap.savedTokens !== tokens) problems.push(`expected ${tokens} tokens, got ${snap.savedTokens}`);
+      if (snap.savedStars !== stars) problems.push(`expected ${stars} stars, got ${snap.savedStars}`);
+      const want = [...completed].sort().join(',');
+      const got = [...snap.completed].sort().join(',');
+      if (want !== got) problems.push(`expected completed [${want}], got [${got}]`);
+      return problems;
+    };
+
+    const readCelebrationPills = () =>
+      client.evaluate(`({
+        tokens: document.querySelector('.tokens-pill strong')?.textContent?.trim() || '',
+        stars: document.querySelector('.stars-pill strong')?.textContent?.trim() || '',
+      })`);
+
+    const finishAndReturnToMap = async () => {
+      await client.click('.claim-reward-btn');
+      await client.waitForSelector('.celebration-screen');
+      const pills = await readCelebrationPills();
+      await client.click('.celebration-actions .map-btn');
+      await client.waitForSelector('.emotion-map-world');
+      return pills;
+    };
+
+    const openAdventure = async (station, rootSelector) => {
+      await client.click(`.map-landmark-card.station-${station} .landmark-play-button`);
+      await client.waitForSelector(rootSelector);
+    };
+
+    // ---------------------------------------------------------------
+    // PHASE 0: FRESH PLAYER (clear only this app's storage key)
+    // ---------------------------------------------------------------
+    console.log('\n--- PHASE 0: Fresh player setup ---');
     await client.setViewport(1280, 800);
+    await client.navigate(BASE_URL);
+    await client.evaluate(`localStorage.removeItem(${JSON.stringify(STORAGE_KEY)})`);
+    await client.reload();
+    await client.waitForSelector('.emotion-map-world');
+    const freshSnap = await settledSnapshot();
+    const freshProblems = expectState(freshSnap, { tokens: 0, stars: 0, completed: [] });
+    record(
+      'Fresh player state',
+      'Isolated profile + cleared app key starts at 0 tokens, 0 stars, no completed adventures',
+      freshProblems.length === 0,
+      freshProblems.length ? freshProblems.join('; ') : fmt(freshSnap),
+    );
 
-    // -------------------------------------------------------------
+    // ---------------------------------------------------------------
     // PHASE 1: HOME SCREEN & MAP
-    // -------------------------------------------------------------
+    // ---------------------------------------------------------------
     console.log('\n--- PHASE 1: Home Screen and Map ---');
-    await client.navigate('http://localhost:4173/');
-    await client.waitForSelector('.emotion-map-world', 8000);
-
-    const pageTitle = await client.evaluate('document.title');
-    const headerH1 = await client.evaluate('document.querySelector("h1")?.textContent?.trim()');
     const landmarks = await client.evaluate(`
-      Array.from(document.querySelectorAll('.map-landmark-card')).map(c => ({
-        name: c.querySelector('.landmark-name')?.textContent?.trim(),
-        btnText: c.querySelector('.landmark-play-button')?.textContent?.trim()
-      }))
+      Array.from(document.querySelectorAll('.map-landmark-card')).map(c => c.querySelector('.landmark-name')?.textContent?.trim())
     `);
+    const expectedNames = ADVENTURES.map((a) => a.name);
+    record(
+      'Home screen and map',
+      'Load home screen and verify 5 adventure cards and titles',
+      JSON.stringify(landmarks) === JSON.stringify(expectedNames),
+      `Landmarks: ${landmarks.join(', ')}`,
+    );
 
-    console.log('Page Title:', pageTitle);
-    console.log('H1:', headerH1);
-    console.log('Found Landmarks:', landmarks);
-
-    if (landmarks.length === 5) {
-      record(
-        'Home screen and map',
-        'Load home screen and verify 5 adventure cards and titles',
-        'PASS',
-        `5 landmarks loaded: ${landmarks.map(l => l.name).join(', ')}`
-      );
-    } else {
-      record(
-        'Home screen and map',
-        'Load home screen and verify 5 adventure cards and titles',
-        'FAIL',
-        `Found ${landmarks.length} landmarks instead of 5`
-      );
-    }
-
-    // Verify desktop single row layout (5 columns in grid)
-    const gridCols = await client.evaluate(`
-      window.getComputedStyle(document.querySelector('.adventure-map-trail')).gridTemplateColumns.split(' ').length
-    `);
-    if (gridCols === 5) {
-      record(
-        'Desktop layout',
-        'Verify 5 adventure cards in single row on desktop viewport (1280x800)',
-        'PASS',
-        `CSS gridTemplateColumns has 5 columns (${gridCols})`
-      );
-    } else {
-      record(
-        'Desktop layout',
-        'Verify 5 adventure cards in single row on desktop viewport (1280x800)',
-        'FAIL',
-        `gridTemplateColumns has ${gridCols} cols instead of 5`
-      );
-    }
-
+    const gridCols = await client.evaluate(
+      `window.getComputedStyle(document.querySelector('.adventure-map-trail')).gridTemplateColumns.split(' ').length`,
+    );
+    record(
+      'Desktop layout',
+      'Verify 5 adventure cards in single row on desktop viewport (1280x800)',
+      gridCols === 5,
+      `CSS gridTemplateColumns has ${gridCols} columns`,
+    );
     await client.captureScreenshot(`${SCREENSHOT_DIR}/01-home-screen.png`);
 
-    // Record initial tokens & stars
-    const initialTokens = await client.evaluate(`parseInt(document.querySelector('.meadow-token-balance b')?.textContent || '0', 10)`);
-    const initialStars = await client.evaluate(`parseInt(document.querySelector('.star-total b')?.textContent || '0', 10)`);
-    console.log(`Initial Tokens: ${initialTokens}, Initial Stars: ${initialStars}`);
-
-    // -------------------------------------------------------------
-    // PHASE 2A: ANGER VOLCANO (EMBER)
-    // -------------------------------------------------------------
-    console.log('\n--- PHASE 2A: Anger Volcano ---');
-    await client.click('.map-landmark-card.station-1 .landmark-play-button');
-    await client.waitForSelector('.cool-the-lava', 6000);
-
-    const hasOrb = await client.evaluate('!!document.querySelector(".breathing-orb")');
-    const hasHeat = await client.evaluate('!!document.querySelector(".heat-gauge")');
-    console.log(`Volcano elements: BreathingOrb=${hasOrb}, HeatGauge=${hasHeat}`);
-
-    // Proceed to tools via skip-calm-btn
-    await client.click('.skip-calm-btn');
-    await client.waitForSelector('.tools-interactive-panel');
-
-    const calmingTools = await client.evaluate(`
-      Array.from(document.querySelectorAll('.tool-card .tool-name')).map(t => t.textContent.trim())
-    `);
-    console.log('Calming Tools:', calmingTools);
-
-    // Apply Calm Words and Cool Water
-    await client.click('.tool-card:nth-child(1)');
-    await client.wait(400);
-    await client.click('.tool-card:nth-child(2)');
-    await client.wait(800);
-
-    await client.waitForSelector('.cooled-success-panel', 6000);
-    await client.captureScreenshot(`${SCREENSHOT_DIR}/02-volcano-cooled.png`);
-
-    await client.click('.claim-reward-btn');
-    await client.waitForSelector('.celebration-screen', 6000);
-
-    const volcanoRewardPill = await client.evaluate(`document.querySelector('.tokens-pill strong')?.textContent?.trim()`);
-    console.log('Volcano Completion Reward:', volcanoRewardPill);
-
-    await client.click('.celebration-actions .map-btn');
-    await client.waitForSelector('.emotion-map-world', 6000);
-
-    const tokensAfterVolcano = await client.evaluate(`parseInt(document.querySelector('.meadow-token-balance b')?.textContent || '0', 10)`);
-    const starsAfterVolcano = await client.evaluate(`parseInt(document.querySelector('.star-total b')?.textContent || '0', 10)`);
-    console.log(`Tokens after Volcano: ${tokensAfterVolcano}, Stars: ${starsAfterVolcano}`);
-
-    record(
-      'Anger Volcano',
-      'Breathing orb, calming tools (Calm Words, Cool Water), visible lava cooling, celebration',
-      'PASS',
-      `Completed successfully. Calming tools: [${calmingTools.join(', ')}]. Reward: ${volcanoRewardPill}`
-    );
-
-    // -------------------------------------------------------------
-    // PHASE 2B: REPLAY & DUPLICATE REWARD CHECK
-    // -------------------------------------------------------------
-    console.log('\n--- Replay Volcano & Anti-Duplication Check ---');
-    await client.click('.map-landmark-card.station-1 .landmark-play-button');
-    await client.waitForSelector('.cool-the-lava', 6000);
-
-    // Verify it started cleanly at breathing orb and not stuck on finish
-    const replayStartedAtOrb = await client.evaluate('!!document.querySelector(".breathing-orb")');
-    await client.click('.skip-calm-btn');
-    await client.waitForSelector('.tools-interactive-panel');
-    await client.click('.tool-card:nth-child(1)');
-    await client.wait(400);
-    await client.click('.tool-card:nth-child(2)');
-    await client.wait(800);
-
-    await client.waitForSelector('.cooled-success-panel');
-    await client.click('.claim-reward-btn');
-    await client.waitForSelector('.celebration-screen');
-
-    const replayTokensPill = await client.evaluate(`document.querySelector('.tokens-pill strong')?.textContent?.trim()`);
-    const replayStarsPill = await client.evaluate(`document.querySelector('.stars-pill strong')?.textContent?.trim()`);
-    console.log(`Replay Reward Display: ${replayTokensPill}, ${replayStarsPill}`);
-
-    await client.click('.celebration-actions .map-btn');
-    await client.waitForSelector('.emotion-map-world');
-
-    const tokensAfterReplay = await client.evaluate(`parseInt(document.querySelector('.meadow-token-balance b')?.textContent || '0', 10)`);
-    const starsAfterReplay = await client.evaluate(`parseInt(document.querySelector('.star-total b')?.textContent || '0', 10)`);
-    console.log(`Tokens after Replay: ${tokensAfterReplay}, Stars: ${starsAfterReplay}`);
-
-    if (tokensAfterReplay === tokensAfterVolcano && starsAfterReplay === starsAfterVolcano) {
-      record(
-        'Replay and duplicate rewards',
-        'Replay completed adventure and confirm zero duplicate rewards',
-        'PASS',
-        `Replay displayed "${replayTokensPill}" and tokens remained steady (${tokensAfterVolcano})`
+    // ---------------------------------------------------------------
+    // Mini-game drivers (each waits on the game's own state changes)
+    // ---------------------------------------------------------------
+    const playVolcano = async () => {
+      await openAdventure(1, '.cool-the-lava');
+      const hasOrb = await client.evaluate('!!document.querySelector(".breathing-orb")');
+      await client.click('.skip-calm-btn');
+      await client.waitForSelector('.tools-interactive-panel');
+      const tools = await client.evaluate(
+        `Array.from(document.querySelectorAll('.tool-card .tool-name')).map(t => t.textContent.trim())`,
       );
-    } else {
-      record(
-        'Replay and duplicate rewards',
-        'Replay completed adventure and confirm zero duplicate rewards',
-        'FAIL',
-        `Tokens changed from ${tokensAfterVolcano} to ${tokensAfterReplay}`
-      );
-    }
+      for (let n = 1; n <= 2; n++) {
+        await client.click('.tool-card:not(.applied)');
+        await client.waitForCount('.tool-card.applied', n);
+      }
+      await client.waitForSelector('.cooled-success-panel');
+      return { hasOrb, tools };
+    };
 
-    // -------------------------------------------------------------
-    // PHASE 2C: STRESS MOUNTAIN (MOSS)
-    // -------------------------------------------------------------
-    console.log('\n--- PHASE 2C: Stress Mountain ---');
-    await client.click('.map-landmark-card.station-2 .landmark-play-button');
-    await client.waitForSelector('.pack-calm-kit', 6000);
+    const playMountain = async () => {
+      await openAdventure(2, '.pack-calm-kit');
+      for (let n = 1; n <= 3; n++) {
+        await client.click('.coping-item-card:not(.packed)');
+        await client.waitForCount('.backpack-slot.filled', n);
+      }
+      await client.click('.start-climb-btn');
+      await client.click('.next-step-btn');
+      await client.waitForText('.next-step-btn', '(2 of 3)');
+      await client.click('.next-step-btn');
+      await client.waitForText('.next-step-btn', 'Summit');
+      await client.click('.next-step-btn');
+      await client.waitForSelector('.summit-success-panel');
+    };
 
-    // Pack 3 items
-    await client.click('.coping-item-card:nth-child(1)');
-    await client.wait(300);
-    await client.click('.coping-item-card:nth-child(2)');
-    await client.wait(300);
-    await client.click('.coping-item-card:nth-child(3)');
-    await client.wait(400);
+    const playRiver = async () => {
+      await openAdventure(3, '.help-a-friend');
+      for (let s = 1; s <= 4; s++) {
+        await client.click('.step-forward-btn'); // click() waits until not disabled (not hopping)
+        const nextTag = s < 4 ? `STEP ${s + 1} OF 4` : 'ACROSS THE RIVER';
+        await client.waitForText('.river-instruction-hud .step-tag', nextTag);
+      }
+      await client.waitForSelector('.river-success-panel');
+    };
 
-    const packedCount = await client.evaluate(`document.querySelectorAll('.backpack-slot.filled').length`);
-    console.log(`Backpack slots filled: ${packedCount}/4`);
-
-    await client.click('.start-climb-btn');
-    await client.wait(500);
-
-    // 3 Trail Climb Steps
-    await client.click('.next-step-btn');
-    await client.wait(500);
-    await client.click('.next-step-btn');
-    await client.wait(500);
-    await client.click('.next-step-btn');
-    await client.wait(800);
-
-    await client.waitForSelector('.summit-success-panel');
-    await client.captureScreenshot(`${SCREENSHOT_DIR}/03-mountain-summit.png`);
-
-    await client.click('.claim-reward-btn');
-    await client.waitForSelector('.celebration-screen');
-    await client.click('.celebration-actions .map-btn');
-    await client.waitForSelector('.emotion-map-world');
-
-    record(
-      'Stress Mountain',
-      'Pack calm kit, advance 3 trail checkpoints, bloom trail flowers, summit celebration',
-      'PASS',
-      `Filled ${packedCount} backpack pockets, climbed trail, reached summit`
-    );
-
-    // -------------------------------------------------------------
-    // PHASE 2D: TEAR RIVER (RIPPLE)
-    // -------------------------------------------------------------
-    console.log('\n--- PHASE 2D: Tear River ---');
-    await client.click('.map-landmark-card.station-3 .landmark-play-button');
-    await client.waitForSelector('.help-a-friend', 6000);
-
-    // 4 Stepping Stones
-    for (let s = 1; s <= 4; s++) {
-      await client.waitForSelector('.step-forward-btn:not(:disabled)', 6000);
-      await client.click('.step-forward-btn');
-      await client.wait(600);
-    }
-
-    await client.waitForSelector('.river-success-panel', 8000);
-    await client.captureScreenshot(`${SCREENSHOT_DIR}/04-river-success.png`);
-
-    await client.click('.claim-reward-btn');
-    await client.waitForSelector('.celebration-screen');
-    await client.click('.celebration-actions .map-btn');
-    await client.waitForSelector('.emotion-map-world');
-
-    record(
-      'Tear River',
-      'Step across 4 stepping stones with Ripple, splash particles, sail leaf boat',
-      'PASS',
-      'Stepping stone progression completed, water ripples and splashes triggered, leaf boat floated'
-    );
-
-    // -------------------------------------------------------------
-    // PHASE 2E: WORRY WOODS (NIMBUS)
-    // -------------------------------------------------------------
-    console.log('\n--- PHASE 2E: Worry Woods ---');
-    await client.click('.map-landmark-card.station-4 .landmark-play-button');
-    await client.waitForSelector('.brave-path', 6000);
-
-    // Notice 3 objects
-    await client.click('.grounding-btn:nth-child(1)');
-    await client.wait(300);
-    await client.click('.grounding-btn:nth-child(2)');
-    await client.wait(300);
-    await client.click('.grounding-btn:nth-child(3)');
-    await client.wait(700);
-
-    await client.waitForSelector('.light-btn');
-    await client.click('.light-btn');
-    await client.wait(600);
-
-    // 3 brave footsteps
-    for (let step = 1; step <= 3; step++) {
+    const playWoods = async () => {
+      await openAdventure(4, '.brave-path');
+      for (let n = 1; n <= 3; n++) {
+        await client.click('.grounding-btn:not(.found)');
+        await client.waitForCount('.grounding-btn.found', n);
+      }
+      await client.click('.light-btn');
       await client.click('.take-step-btn');
-      await client.wait(500);
+      await client.waitForText('.take-step-btn', '(2 of 3)');
+      await client.click('.take-step-btn');
+      await client.waitForText('.take-step-btn', '(3 of 3)');
+      await client.click('.take-step-btn');
+      await client.waitForSelector('.clearing-success-panel');
+    };
+
+    const playGarden = async () => {
+      await openAdventure(5, '.happiness-garden');
+      for (let n = 1; n <= 3; n++) {
+        await client.click('.sunbeam-btn:not(.collected)');
+        await client.waitForCount('.sunbeam-btn.collected', n);
+      }
+      await client.click('.water-btn');
+      await client.waitForSelector('.decoration-card');
+      for (let n = 1; n <= 3; n++) {
+        await client.click('.decoration-card:not(.planted)');
+        await client.waitForCount('.decoration-card.planted', n);
+      }
+      await client.waitForSelector('.blooming-success-panel');
+    };
+
+    const firstTimePillsOk = (p) => p.tokens === `+${ADVENTURE_TOKENS} Tokens` && p.stars === `+${ADVENTURE_STARS} Stars`;
+
+    // ---------------------------------------------------------------
+    // PHASE 2A: ANGER VOLCANO — genuine first-time reward
+    // ---------------------------------------------------------------
+    console.log('\n--- PHASE 2A: Anger Volcano (first time) ---');
+    const volcano = await playVolcano();
+    await client.captureScreenshot(`${SCREENSHOT_DIR}/02-volcano-cooled.png`);
+    const volcanoPills = await finishAndReturnToMap();
+    const afterVolcano = await settledSnapshot();
+    const volcanoProblems = expectState(afterVolcano, { tokens: ADVENTURE_TOKENS, stars: ADVENTURE_STARS, completed: ['anger'] });
+    if (!firstTimePillsOk(volcanoPills)) volcanoProblems.push(`celebration showed "${volcanoPills.tokens}" / "${volcanoPills.stars}"`);
+    if (!volcano.hasOrb) volcanoProblems.push('breathing orb missing');
+    record(
+      'Anger Volcano (first-time reward)',
+      `Fresh player completes Anger Volcano and earns exactly +${ADVENTURE_TOKENS} tokens / +${ADVENTURE_STARS} stars`,
+      volcanoProblems.length === 0,
+      volcanoProblems.length
+        ? volcanoProblems.join('; ')
+        : `Celebration "${volcanoPills.tokens}", "${volcanoPills.stars}"; tools [${volcano.tools.join(', ')}]; ${fmt(afterVolcano)}`,
+    );
+
+    // ---------------------------------------------------------------
+    // PHASE 2B: REPLAY — no duplicate rewards
+    // ---------------------------------------------------------------
+    console.log('\n--- PHASE 2B: Replay Anger Volcano ---');
+    const replay = await playVolcano();
+    const replayPills = await finishAndReturnToMap();
+    const afterReplay = await settledSnapshot();
+    const replayProblems = expectState(afterReplay, { tokens: ADVENTURE_TOKENS, stars: ADVENTURE_STARS, completed: ['anger'] });
+    if (!replay.hasOrb) replayProblems.push('replay did not restart at the breathing orb');
+    if (replayPills.tokens !== '+0 (Replay) Tokens' || replayPills.stars !== '+0 Stars') {
+      replayProblems.push(`replay celebration showed "${replayPills.tokens}" / "${replayPills.stars}"`);
+    }
+    record(
+      'Replay and duplicate rewards',
+      'Replay the completed adventure; celebration shows +0 and totals stay unchanged',
+      replayProblems.length === 0,
+      replayProblems.length ? replayProblems.join('; ') : `Celebration "${replayPills.tokens}", "${replayPills.stars}"; ${fmt(afterReplay)}`,
+    );
+
+    // ---------------------------------------------------------------
+    // PHASE 2C–2F: Remaining four adventures (first-time each)
+    // ---------------------------------------------------------------
+    const remaining = [
+      { adv: ADVENTURES[1], play: playMountain, shot: '03-mountain-summit.png', what: 'Pack calm kit, 3 trail checkpoints, summit' },
+      { adv: ADVENTURES[2], play: playRiver, shot: '04-river-success.png', what: 'Cross 4 stepping stones with Ripple' },
+      { adv: ADVENTURES[3], play: playWoods, shot: '05-woods-campfire.png', what: 'Notice 3 forest friends, light lantern, 3 brave steps' },
+      { adv: ADVENTURES[4], play: playGarden, shot: '06-garden-blooming.png', what: 'Catch 3 sunbeams, water, plant 3 joy flowers' },
+    ];
+    const done = ['anger'];
+    for (const { adv, play, shot, what } of remaining) {
+      console.log(`\n--- ${adv.name} ---`);
+      await play();
+      await client.captureScreenshot(`${SCREENSHOT_DIR}/${shot}`);
+      const pills = await finishAndReturnToMap();
+      done.push(adv.id);
+      const snap = await settledSnapshot();
+      const problems = expectState(snap, {
+        tokens: ADVENTURE_TOKENS * done.length,
+        stars: ADVENTURE_STARS * done.length,
+        completed: done,
+      });
+      if (!firstTimePillsOk(pills)) problems.push(`celebration showed "${pills.tokens}" / "${pills.stars}"`);
+      record(
+        adv.name,
+        `${what}; first-time reward credited once`,
+        problems.length === 0,
+        problems.length ? problems.join('; ') : `Celebration "${pills.tokens}", "${pills.stars}"; ${fmt(snap)}`,
+      );
     }
 
-    await client.waitForSelector('.clearing-success-panel');
-    await client.captureScreenshot(`${SCREENSHOT_DIR}/05-woods-campfire.png`);
-
-    await client.click('.claim-reward-btn');
-    await client.waitForSelector('.celebration-screen');
-    await client.click('.celebration-actions .map-btn');
-    await client.waitForSelector('.emotion-map-world');
-
-    record(
-      'Worry Woods',
-      'Grounding targets (bird, squirrel, firefly), light lantern, 3 brave footsteps to campfire',
-      'PASS',
-      '3 woodland wonders noticed, companion lantern lit, campfire clearing reached'
-    );
-
-    // -------------------------------------------------------------
-    // PHASE 2F: SPARK SUMMIT (SUNNY)
-    // -------------------------------------------------------------
-    console.log('\n--- PHASE 2F: Spark Summit ---');
-    await client.click('.map-landmark-card.station-5 .landmark-play-button');
-    await client.waitForSelector('.happiness-garden', 6000);
-
-    // Catch 3 sunbeams
-    await client.click('.sunbeam-btn:nth-child(1)');
-    await client.wait(300);
-    await client.click('.sunbeam-btn:nth-child(2)');
-    await client.wait(300);
-    await client.click('.sunbeam-btn:nth-child(3)');
-    await client.wait(700);
-
-    await client.waitForSelector('.water-btn');
-    await client.click('.water-btn');
-    await client.wait(1000);
-
-    await client.waitForSelector('.decoration-card');
-    await client.click('.decoration-card:nth-child(1)');
-    await client.wait(350);
-    await client.click('.decoration-card:nth-child(2)');
-    await client.wait(350);
-    await client.click('.decoration-card:nth-child(3)');
-    await client.wait(800);
-
-    await client.waitForSelector('.blooming-success-panel');
-    await client.captureScreenshot(`${SCREENSHOT_DIR}/06-garden-blooming.png`);
-
-    await client.click('.claim-reward-btn');
-    await client.waitForSelector('.celebration-screen');
-    await client.click('.celebration-actions .map-btn');
-    await client.waitForSelector('.emotion-map-world');
-
-    record(
-      'Spark Summit',
-      'Catch 3 sunbeams, water soil, plant 3 joy flowers to full bloom celebration',
-      'PASS',
-      'Sunbeams caught, garden watered, flowers bloomed with dancing Sunny'
-    );
-
-    // -------------------------------------------------------------
+    // ---------------------------------------------------------------
     // PHASE 3: PERSISTENCE AFTER REFRESH
-    // -------------------------------------------------------------
-    console.log('\n--- PHASE 3: Verifying Persistence After Page Reload ---');
-    const tokensBefore = await client.evaluate(`parseInt(document.querySelector('.meadow-token-balance b')?.textContent || '0', 10)`);
-    const starsBefore = await client.evaluate(`parseInt(document.querySelector('.star-total b')?.textContent || '0', 10)`);
-    const completedBefore = await client.evaluate(`JSON.parse(localStorage.getItem('moodie_meadows_v2') || '{}').completed?.length || 0`);
-
-    console.log(`Before Reload: Tokens=${tokensBefore}, Stars=${starsBefore}, CompletedCount=${completedBefore}`);
-
+    // ---------------------------------------------------------------
+    console.log('\n--- PHASE 3: Persistence after reload ---');
+    const expectedAll = {
+      tokens: ADVENTURE_TOKENS * ADVENTURES.length,
+      stars: ADVENTURE_STARS * ADVENTURES.length,
+      completed: ADVENTURES.map((a) => a.id),
+    };
+    const beforeReload = await settledSnapshot();
     await client.reload();
-    await client.waitForSelector('.emotion-map-world', 8000);
+    await client.waitForSelector('.emotion-map-world');
+    const afterReload = await settledSnapshot();
+    const persistProblems = [
+      ...expectState(beforeReload, expectedAll).map((p) => `before reload: ${p}`),
+      ...expectState(afterReload, expectedAll).map((p) => `after reload: ${p}`),
+    ];
+    record(
+      'Persistence after refresh',
+      'Reload page; tokens, stars and completed adventures (saved state, HUD and map) are identical and correct',
+      persistProblems.length === 0,
+      persistProblems.length
+        ? persistProblems.join('; ')
+        : `${fmt(afterReload)}; map shows ${afterReload.completedCards}/5 completed`,
+    );
 
-    const tokensAfter = await client.evaluate(`parseInt(document.querySelector('.meadow-token-balance b')?.textContent || '0', 10)`);
-    const starsAfter = await client.evaluate(`parseInt(document.querySelector('.star-total b')?.textContent || '0', 10)`);
-    const completedAfter = await client.evaluate(`JSON.parse(localStorage.getItem('moodie_meadows_v2') || '{}').completed?.length || 0`);
-
-    console.log(`After Reload: Tokens=${tokensAfter}, Stars=${starsAfter}, CompletedCount=${completedAfter}`);
-
-    if (tokensBefore === tokensAfter && starsBefore === starsAfter && completedBefore === completedAfter) {
-      record(
-        'Persistence after refresh',
-        'Reload page and confirm tokens, stars, and completion state stay intact',
-        'PASS',
-        `Preserved tokens (${tokensAfter}), stars (${starsAfter}/15), and completed landmarks (${completedAfter})`
-      );
-    } else {
-      record(
-        'Persistence after refresh',
-        'Reload page and confirm tokens, stars, and completion state stay intact',
-        'FAIL',
-        `Mismatch: Tokens ${tokensBefore}->${tokensAfter}, Stars ${starsBefore}->${starsAfter}`
-      );
-    }
-
-    // -------------------------------------------------------------
+    // ---------------------------------------------------------------
     // PHASE 3B: REWARD SHOP
-    // -------------------------------------------------------------
-    console.log('\n--- PHASE 3B: Testing Reward Shop ---');
+    // ---------------------------------------------------------------
+    console.log('\n--- PHASE 3B: Reward Shop ---');
     await client.click('.nav-button[aria-label="Reward Shop"]');
-    await client.waitForSelector('.shop-grid', 6000);
-
-    const shopWallet = await client.evaluate(`parseInt(document.querySelector('.meadow-token-balance b')?.textContent?.replace(/[^0-9]/g, '') || '0', 10)`);
-    const shopItemCount = await client.evaluate(`document.querySelectorAll('.shop-card').length`);
-    console.log(`Shop open: Wallet=${shopWallet} tokens, Items=${shopItemCount}`);
-
+    await client.waitForSelector('.shop-grid');
     await client.captureScreenshot(`${SCREENSHOT_DIR}/07-reward-shop.png`);
-
-    // Click buy on first available item if afford
-    const firstBuyBtn = await client.evaluate(`!!document.querySelector('.shop-card:not(.owned) button:not(:disabled)')`);
-    if (firstBuyBtn) {
-      await client.click('.shop-card:not(.owned) button:not(:disabled)');
-      await client.wait(500);
-      const shopWalletAfter = await client.evaluate(`parseInt(document.querySelector('.meadow-token-balance b')?.textContent?.replace(/[^0-9]/g, '') || '0', 10)`);
-      console.log(`Shop wallet after purchase: ${shopWalletAfter}`);
-      record(
-        'Reward Shop',
-        'Navigate to Reward Shop, purchase item, verify token deduction and inventory',
-        'PASS',
-        `Purchased item, wallet tokens updated from ${shopWallet} to ${shopWalletAfter}`
-      );
+    const shopBefore = await settledSnapshot();
+    const item = await client.evaluate(`(() => {
+      const cards = Array.from(document.querySelectorAll('.shop-card:not(.owned)'));
+      const idx = cards.findIndex(c => { const b = c.querySelector('button'); return b && !b.disabled; });
+      if (idx < 0) return null;
+      const card = cards[idx];
+      card.setAttribute('data-e2e-buy', '1');
+      return { title: card.querySelector('h3')?.textContent?.trim(), price: parseInt(card.querySelector('.price-tag')?.textContent || '', 10) };
+    })()`);
+    const shopProblems = [];
+    let shopEvidence = '';
+    if (!item || !Number.isInteger(item.price)) {
+      shopProblems.push(`no affordable item found with ${shopBefore.savedTokens} tokens`);
     } else {
-      record(
-        'Reward Shop',
-        'Navigate to Reward Shop, view items and wallet balance',
-        'PASS',
-        `Shop loaded with ${shopItemCount} items, wallet: ${shopWallet} tokens`
+      await client.click('[data-e2e-buy="1"] button');
+      await client.waitForFunction(
+        `JSON.parse(localStorage.getItem(${JSON.stringify(STORAGE_KEY)}) || '{}').owned?.length === ${shopBefore.owned.length + 1}`,
       );
+      await client.waitForSelector('[data-e2e-buy="1"].owned');
+      const shopAfter = await settledSnapshot();
+      shopProblems.push(...consistencyProblems({ ...shopAfter, onMap: false }));
+      if (shopAfter.savedTokens !== shopBefore.savedTokens - item.price) {
+        shopProblems.push(`tokens ${shopBefore.savedTokens} -> ${shopAfter.savedTokens}, expected -${item.price}`);
+      }
+      if (shopAfter.savedStars !== shopBefore.savedStars) shopProblems.push('stars changed after purchase');
+      shopEvidence = `Bought "${item.title}" for ${item.price}; tokens ${shopBefore.savedTokens} -> ${shopAfter.savedTokens} (HUD ${shopAfter.hudTokens}); owned ${shopAfter.owned.length}`;
     }
+    record(
+      'Reward Shop',
+      'Buy an affordable item; exact price deducted, item marked owned, HUD matches saved state',
+      shopProblems.length === 0,
+      shopProblems.length ? shopProblems.join('; ') : shopEvidence,
+    );
 
-    // Return to map
     await client.click('.nav-button[aria-label="Adventure Map"]');
-    await client.waitForSelector('.emotion-map-world', 6000);
+    await client.waitForSelector('.emotion-map-world');
 
-    // -------------------------------------------------------------
-    // PHASE 4: MOBILE VIEWPORT & RESPONSIVENESS
-    // -------------------------------------------------------------
+    // ---------------------------------------------------------------
+    // PHASE 4: MOBILE VIEWPORT
+    // ---------------------------------------------------------------
     console.log('\n--- PHASE 4: Mobile Viewport (390x844) ---');
     await client.setViewport(390, 844);
-    await client.wait(500);
-
+    await client.waitForFunction(`document.documentElement.clientWidth <= 390`);
     const overflowX = await client.evaluate(`document.documentElement.scrollWidth > window.innerWidth`);
-    const mobileCols = await client.evaluate(`
-      window.getComputedStyle(document.querySelector('.adventure-map-trail')).gridTemplateColumns.split(' ').length
-    `);
-    console.log(`Mobile Check: horizontal overflow = ${overflowX}, columns = ${mobileCols}`);
-
+    const mobileCols = await client.evaluate(
+      `window.getComputedStyle(document.querySelector('.adventure-map-trail')).gridTemplateColumns.split(' ').length`,
+    );
     await client.captureScreenshot(`${SCREENSHOT_DIR}/08-mobile-viewport.png`);
-
-    if (!overflowX) {
-      record(
-        'Mobile layout',
-        'Resize viewport to 390x844, check horizontal overflow and card stacking',
-        'PASS',
-        `No horizontal overflow (scrollWidth <= innerWidth), cards wrap responsively (${mobileCols} cols)`
-      );
-    } else {
-      record(
-        'Mobile layout',
-        'Resize viewport to 390x844, check horizontal overflow and card stacking',
-        'FAIL',
-        'Horizontal scrollbar detected on mobile'
-      );
-    }
-
-    // Restore desktop viewport
+    record(
+      'Mobile layout',
+      'Resize viewport to 390x844, check horizontal overflow and card stacking',
+      !overflowX && mobileCols < 5,
+      `horizontal overflow=${overflowX}, grid columns=${mobileCols}`,
+    );
     await client.setViewport(1280, 800);
 
-    // -------------------------------------------------------------
+    // ---------------------------------------------------------------
     // PHASE 4B: ACCESSIBILITY & NARRATION
-    // -------------------------------------------------------------
-    console.log('\n--- Narration & Accessibility ---');
+    // ---------------------------------------------------------------
     const narrationButtons = await client.evaluate(`
-      Array.from(document.querySelectorAll('.narration-button, .sound-button')).map(b => b.getAttribute('aria-label') || b.title)
+      Array.from(document.querySelectorAll('.narration-button, .sound-button')).map(b => b.getAttribute('aria-label') || b.title || '')
     `);
-    console.log('Narration & Sound Buttons:', narrationButtons);
-
+    const labelled = narrationButtons.filter(Boolean);
     record(
       'Keyboard and narration accessibility',
-      'Verify ARIA labels, narration speech controls, and sound toggle',
-      'PASS',
-      `Narration and sound buttons present with accessible labels: ${narrationButtons.filter(Boolean).slice(0, 3).join('; ')}`
+      'Narration and sound controls exist and every one has an accessible label',
+      labelled.length > 0 && labelled.length === narrationButtons.length,
+      `${labelled.length}/${narrationButtons.length} labelled, e.g. ${labelled.slice(0, 2).join('; ')}`,
     );
 
-    // -------------------------------------------------------------
+    // ---------------------------------------------------------------
     // CONSOLE & NETWORK HEALTH
-    // -------------------------------------------------------------
-    console.log('\n--- Console Errors & Network Status ---');
-    console.log(`Console Errors count: ${client.consoleErrors.length}`);
-    if (client.consoleErrors.length > 0) {
-      console.log('Errors:', client.consoleErrors);
-    }
-    console.log(`Network Failures count: ${client.networkErrors.length}`);
-
-    if (client.consoleErrors.length === 0 && client.networkErrors.length === 0) {
-      record(
-        'Browser console and failed requests',
-        'Monitor uncaught JavaScript errors and network asset load failures throughout all mini-games',
-        'PASS',
-        'Zero console errors, zero failed network requests'
-      );
-    } else {
-      record(
-        'Browser console and failed requests',
-        'Monitor uncaught JavaScript errors and network asset load failures throughout all mini-games',
-        'PASS',
-        `Completed cleanly with ${client.consoleErrors.length} console errors and ${client.networkErrors.length} network errors`
-      );
-    }
-
+    // ---------------------------------------------------------------
+    if (client.consoleErrors.length) console.log('Console errors:', client.consoleErrors);
+    record(
+      'Browser console and failed requests',
+      'No uncaught JavaScript errors or failed network requests during the whole run',
+      client.consoleErrors.length === 0 && client.networkErrors.length === 0,
+      `${client.consoleErrors.length} console errors, ${client.networkErrors.length} failed requests`,
+    );
   } catch (err) {
     console.error('Fatal E2E Error:', err);
-    record('E2E Test Execution', 'End-to-end execution', 'FAIL', err.message);
+    record('E2E Test Execution', 'End-to-end execution', false, err.message);
   } finally {
     if (client) client.close();
+    if (browser) await browser.close();
   }
 
-  // Print Summary Table
   console.log('\n=============================================================');
   console.log('=== END-TO-END VERIFICATION SUMMARY TABLE ===');
   console.log('=============================================================');
   console.table(results);
 
-  fs.writeFileSync('tests/verification-results.json', JSON.stringify(results, null, 2));
+  const failed = results.filter((r) => r.result !== 'PASS').length;
+  console.log(`\n${results.length - failed}/${results.length} checks passed.`);
+  fs.writeFileSync(RESULTS_FILE, JSON.stringify(results, null, 2));
+  if (failed > 0) process.exitCode = 1;
 }
 
-runVerification().catch(console.error);
+runVerification().catch((err) => {
+  console.error(err);
+  process.exitCode = 1;
+});

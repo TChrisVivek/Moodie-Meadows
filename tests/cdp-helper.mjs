@@ -1,6 +1,114 @@
 // cdp-helper.mjs - Lightweight CDP client using Node 22 built-in WebSocket
+//
+// Isolation guarantee: the E2E suite never attaches to an already-running
+// browser. It launches its own headless Chrome/Edge with a brand-new, empty
+// profile in the OS temp directory, on a dedicated debugging port, and deletes
+// that profile when the run ends. The user's real browser data is never read,
+// modified or cleared.
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Finds a Chromium-based browser. Override with the CHROME_PATH env var. */
+function resolveBrowserPath() {
+  if (process.env.CHROME_PATH) return process.env.CHROME_PATH;
+
+  const candidates = [];
+  if (process.platform === 'win32') {
+    const roots = [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA].filter(Boolean);
+    for (const root of roots) {
+      candidates.push(path.join(root, 'Google', 'Chrome', 'Application', 'chrome.exe'));
+    }
+    for (const root of roots) {
+      candidates.push(path.join(root, 'Microsoft', 'Edge', 'Application', 'msedge.exe'));
+    }
+  } else if (process.platform === 'darwin') {
+    candidates.push(
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Chromium.app/Contents/MacOS/Chromium',
+      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+    );
+  } else {
+    candidates.push('/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser');
+  }
+
+  const found = candidates.find((p) => fs.existsSync(p));
+  if (!found) {
+    throw new Error('No Chrome/Edge executable found. Set CHROME_PATH to a Chromium-based browser.');
+  }
+  return found;
+}
+
+async function isPortServingCdp(port) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/json/version`);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Launches an isolated headless browser with a fresh temporary profile.
+ * Returns a handle whose close() stops the browser and deletes the profile.
+ */
+export async function launchIsolatedBrowser({ port = Number(process.env.E2E_CDP_PORT) || 9333 } = {}) {
+  if (await isPortServingCdp(port)) {
+    throw new Error(
+      `Port ${port} already has a DevTools endpoint. Refusing to attach to an existing browser ` +
+        `(it may hold real user data). Close it or set E2E_CDP_PORT to a free port.`,
+    );
+  }
+
+  const browserPath = resolveBrowserPath();
+  const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'moodie-e2e-profile-'));
+
+  const child = spawn(
+    browserPath,
+    [
+      `--remote-debugging-port=${port}`,
+      '--headless=new',
+      `--user-data-dir=${profileDir}`,
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-extensions',
+      '--disable-sync',
+      '--mute-audio',
+      'about:blank',
+    ],
+    { stdio: 'ignore' },
+  );
+
+  let exited = false;
+  const exitPromise = new Promise((resolve) => child.once('exit', () => { exited = true; resolve(); }));
+
+  // Poll the DevTools endpoint until it is ready (bounded, condition-based).
+  const deadline = Date.now() + 15000;
+  while (!(await isPortServingCdp(port))) {
+    if (exited) throw new Error(`Browser exited before DevTools became available (${browserPath}).`);
+    if (Date.now() > deadline) {
+      child.kill();
+      throw new Error(`Timed out waiting for DevTools on port ${port}.`);
+    }
+    await sleep(100);
+  }
+
+  return {
+    port,
+    profileDir,
+    async close() {
+      if (!exited) {
+        child.kill();
+        await Promise.race([exitPromise, sleep(5000)]);
+      }
+      // Chrome can hold file locks briefly after exit on Windows; retry removal.
+      fs.rmSync(profileDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    },
+  };
+}
 
 export class CDPClient {
   constructor(wsUrl) {
@@ -14,47 +122,11 @@ export class CDPClient {
     this.networkErrors = [];
   }
 
-  static async ensureBrowser() {
-    try {
-      const res = await fetch('http://127.0.0.1:9222/json/version');
-      if (res.ok) return;
-    } catch {
-      const chromePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-      const tempUserData = path.join(process.cwd(), 'node_modules', '.tmp_chrome_e2e');
-      fs.mkdirSync(tempUserData, { recursive: true });
-      const { spawn } = await import('node:child_process');
-      const child = spawn(
-        chromePath,
-        [
-          '--remote-debugging-port=9222',
-          '--headless=new',
-          `--user-data-dir=${tempUserData}`,
-          '--no-first-run',
-          '--no-default-browser-check',
-          'http://localhost:4173/',
-        ],
-        { detached: true, stdio: 'ignore' }
-      );
-      child.unref();
-
-      for (let i = 0; i < 35; i++) {
-        await new Promise((r) => setTimeout(r, 200));
-        try {
-          const res = await fetch('http://127.0.0.1:9222/json/version');
-          if (res.ok) return;
-        } catch {}
-      }
-    }
-  }
-
-  static async findTarget(filter = (t) => t.type === 'page' && t.url.includes('4173')) {
-    await CDPClient.ensureBrowser();
-    const res = await fetch('http://127.0.0.1:9222/json/list');
+  /** Returns the first page target of the isolated browser on `port`. */
+  static async findTarget(port) {
+    const res = await fetch(`http://127.0.0.1:${port}/json/list`);
     const targets = await res.json();
-    let target = targets.find(filter);
-    if (!target) {
-      target = targets.find((t) => t.type === 'page');
-    }
+    const target = targets.find((t) => t.type === 'page');
     if (!target) throw new Error('No Chrome page target found');
     return target;
   }
@@ -118,14 +190,17 @@ export class CDPClient {
     await this.send('Network.enable');
   }
 
+  /** Navigates and waits until the document has fully loaded. */
   async navigate(url) {
     await this.send('Page.navigate', { url });
-    await this.wait(1500);
+    await this.waitForFunction(`document.readyState === 'complete' && location.href.startsWith(${JSON.stringify(url)})`);
   }
 
+  /** Reloads and waits for a NEW document to finish loading (old one is marked first). */
   async reload() {
-    await this.send('Page.reload');
-    await this.wait(1000);
+    await this.evaluate('window.__e2eBeforeReload = true');
+    await this.send('Page.reload', { ignoreCache: true });
+    await this.waitForFunction(`!window.__e2eBeforeReload && document.readyState === 'complete'`);
   }
 
   async evaluate(expression) {
@@ -141,21 +216,53 @@ export class CDPClient {
   }
 
   async wait(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return sleep(ms);
+  }
+
+  /**
+   * Polls a page expression until it is truthy. Throws with `description`
+   * on timeout. Evaluation errors during navigation are treated as "not yet".
+   */
+  async waitForFunction(expression, timeoutMs = 8000, description = expression) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        if (await this.evaluate(expression)) return true;
+      } catch {
+        // Context may be mid-navigation; keep polling.
+      }
+      await sleep(100);
+    }
+    throw new Error(`Timeout (${timeoutMs}ms) waiting for: ${description}`);
   }
 
   async waitForSelector(selector, timeoutMs = 8000) {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      const exists = await this.evaluate(`!!document.querySelector(${JSON.stringify(selector)})`);
-      if (exists) return true;
-      await this.wait(150);
-    }
-    throw new Error(`Timeout waiting for selector: ${selector}`);
+    return this.waitForFunction(`!!document.querySelector(${JSON.stringify(selector)})`, timeoutMs, `selector ${selector}`);
   }
 
+  async waitForCount(selector, count, timeoutMs = 8000) {
+    return this.waitForFunction(
+      `document.querySelectorAll(${JSON.stringify(selector)}).length >= ${count}`,
+      timeoutMs,
+      `${count}x ${selector}`,
+    );
+  }
+
+  async waitForText(selector, substring, timeoutMs = 8000) {
+    return this.waitForFunction(
+      `(document.querySelector(${JSON.stringify(selector)})?.textContent || '').includes(${JSON.stringify(substring)})`,
+      timeoutMs,
+      `"${substring}" in ${selector}`,
+    );
+  }
+
+  /** Clicks the first match once it exists and is enabled. No fixed post-click delay. */
   async click(selector) {
-    await this.waitForSelector(selector);
+    await this.waitForFunction(
+      `(() => { const el = document.querySelector(${JSON.stringify(selector)}); return !!el && !el.disabled; })()`,
+      8000,
+      `enabled ${selector}`,
+    );
     const success = await this.evaluate(`(() => {
       const el = document.querySelector(${JSON.stringify(selector)});
       if (!el) return false;
@@ -164,7 +271,6 @@ export class CDPClient {
       return true;
     })()`);
     if (!success) throw new Error(`Failed to click selector: ${selector}`);
-    await this.wait(350);
   }
 
   async setViewport(width, height) {
@@ -174,7 +280,7 @@ export class CDPClient {
       deviceScaleFactor: 1,
       mobile: width < 768,
     });
-    await this.wait(200);
+    await this.waitForFunction(`window.innerWidth === ${width}`, 4000, `viewport width ${width}`);
   }
 
   async captureScreenshot(filepath) {

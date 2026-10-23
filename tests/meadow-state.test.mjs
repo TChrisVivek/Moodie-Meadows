@@ -958,3 +958,25 @@ test("24. mini-games: Replaying any completed mini-game awards zero duplicate to
   assert.equal(second.state.stars, 3, "Star balance strictly conserved")
 })
 
+test("25. mini-games: run.earned records what each play-through added (drives the celebration screen)", () => {
+  let state = initial()
+  state = applyBegin(state, "anger")
+  state = applyTap(state, "anger", "minigame_complete")
+  const first = applyCompleteAdventure(state, "anger")
+  assert.deepEqual(
+    first.state.runs.anger.earned,
+    { tokens: ADVENTURE_TOKENS, stars: ADVENTURE_STARS },
+    "First completion records the full reward for this run",
+  )
+
+  let replay = applyBegin(first.state, "anger", true)
+  assert.equal(replay.runs.anger.earned, null, "Replay starts with no earned record")
+  replay = applyTap(replay, "anger", "minigame_complete")
+  const second = applyCompleteAdventure(replay, "anger")
+  assert.deepEqual(
+    second.state.runs.anger.earned,
+    { tokens: 0, stars: 0 },
+    "Replay completion records zero earned, so the celebration shows a replay",
+  )
+})
+

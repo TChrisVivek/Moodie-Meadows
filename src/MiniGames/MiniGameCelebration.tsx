@@ -26,7 +26,7 @@ export default function MiniGameCelebration({
 
   const celebrationText = alreadyCompleted
     ? `You completed ${adventure.title} again! You're becoming a master of exploring big feelings.`
-    : `Hooray! You completed ${adventure.title}! You earned 30 Meadow Tokens and 3 shiny stars!`
+    : `Hooray! You completed ${adventure.title}! You earned ${displayTokens} Meadow Tokens and ${displayStars} shiny stars!`
 
   return (
     <div className="celebration-screen" role="region" aria-label="Celebration and Rewards">
@@ -68,7 +68,7 @@ export default function MiniGameCelebration({
           <div className="reward-pill tokens-pill">
             <span className="pill-icon">🪙</span>
             <div className="pill-info">
-              <strong>+{alreadyCompleted ? "0 (Replay)" : "30"} Tokens</strong>
+              <strong>+{alreadyCompleted ? "0 (Replay)" : displayTokens} Tokens</strong>
               <small>Meadow Tokens</small>
             </div>
           </div>
@@ -76,7 +76,7 @@ export default function MiniGameCelebration({
           <div className="reward-pill stars-pill">
             <span className="pill-icon">⭐</span>
             <div className="pill-info">
-              <strong>+{alreadyCompleted ? "0" : "3"} Stars</strong>
+              <strong>+{displayStars} Stars</strong>
               <small>Exploration Stars</small>
             </div>
           </div>
